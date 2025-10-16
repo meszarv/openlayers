@@ -653,6 +653,8 @@ class Executor {
    * @param {import("../../extent.js").Extent} [hitExtent] Only check
    *     features that intersect this extent.
    * @param {import("rbush").default<DeclutterEntry>} [declutterTree] Declutter tree.
+   * @param {number} [start] First instruction index to execute.
+   * @param {number} [end] Instruction index to stop before.
    * @return {T|undefined} Callback result.
    * @template T
    */
@@ -665,7 +667,11 @@ class Executor {
     featureCallback,
     hitExtent,
     declutterTree,
+    start = 0,
+    end = instructions.length,
   ) {
+    const instructionStart = Math.max(0, start);
+    const instructionEnd = Math.min(end, instructions.length);
     const zIndexContext = this.zIndexContext_;
     /** @type {Array<number>} */
     let pixelCoordinates;
@@ -685,8 +691,8 @@ class Executor {
       );
       transformSetFromArray(this.renderedTransform_, transform);
     }
-    let i = 0; // instruction index
-    const ii = instructions.length; // end of instructions
+    let i = instructionStart; // instruction index
+    const ii = instructionEnd; // end of instructions
     let d = 0; // data index
     let dd; // end of per-instruction data
     let anchorX,
@@ -1243,6 +1249,8 @@ class Executor {
    * @param {number} viewRotation View rotation.
    * @param {boolean} snapToPixel Snap point symbols and text to integer pixels.
    * @param {import("rbush").default<DeclutterEntry>} [declutterTree] Declutter tree.
+   * @param {number} [start] First instruction index to execute.
+   * @param {number} [end] Instruction index to stop before.
    */
   execute(
     context,
@@ -1251,6 +1259,8 @@ class Executor {
     viewRotation,
     snapToPixel,
     declutterTree,
+    start = 0,
+    end = this.instructions.length,
   ) {
     this.viewRotation_ = viewRotation;
     this.execute_(
@@ -1262,6 +1272,8 @@ class Executor {
       undefined,
       undefined,
       declutterTree,
+      start,
+      end,
     );
   }
 

@@ -128,6 +128,7 @@ class CanvasVectorTileLayerRenderer extends CanvasTileLayerRenderer {
       tile,
       frameState.pixelRatio,
       frameState.viewState.projection,
+      frameState.viewState.zoom,
     );
     if (this.tileImageNeedsRender_(tile)) {
       this.renderTileImage_(tile, frameState);
@@ -184,7 +185,7 @@ class CanvasVectorTileLayerRenderer extends CanvasTileLayerRenderer {
    * @param {import("../../proj/Projection.js").default} projection Projection.
    * @private
    */
-  updateExecutorGroup_(tile, pixelRatio, projection) {
+  updateExecutorGroup_(tile, pixelRatio, projection, zoom) {
     const layer = /** @type {import("../../layer/VectorTile.js").default} */ (
       this.getLayer()
     );
@@ -261,6 +262,9 @@ class CanvasVectorTileLayerRenderer extends CanvasTileLayerRenderer {
             builderGroup,
             declutter,
             index,
+            resolution,
+            zoom,
+            undefined,
           );
           builderState.dirty = builderState.dirty || dirty;
         }
@@ -852,6 +856,9 @@ class CanvasVectorTileLayerRenderer extends CanvasTileLayerRenderer {
    * @param {import("../../render/canvas/BuilderGroup.js").default} builderGroup Replay group.
    * @param {boolean} [declutter] Enable decluttering.
    * @param {number} [index] Render order index.
+   * @param {number} resolution View resolution.
+   * @param {number} zoom Current view zoom.
+   * @param {{lod:number}|undefined} [timings] Timing bucket (optional).
    * @return {boolean} `true` if an image is loading.
    */
   renderFeature(
@@ -861,6 +868,9 @@ class CanvasVectorTileLayerRenderer extends CanvasTileLayerRenderer {
     builderGroup,
     declutter,
     index,
+    resolution,
+    zoom,
+    timings,
   ) {
     if (!styles) {
       return false;
@@ -878,6 +888,9 @@ class CanvasVectorTileLayerRenderer extends CanvasTileLayerRenderer {
             undefined,
             declutter,
             index,
+            resolution,
+            zoom,
+            timings,
           ) || loading;
       }
     } else {
@@ -890,6 +903,9 @@ class CanvasVectorTileLayerRenderer extends CanvasTileLayerRenderer {
         undefined,
         declutter,
         index,
+        resolution,
+        zoom,
+        timings,
       );
     }
     return loading;

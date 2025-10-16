@@ -198,49 +198,63 @@ class CanvasImageBuilder extends CanvasBuilder {
         );
       }
     }
-    const myBegin = this.coordinates.length;
-    const myEnd = this.appendFlatPointCoordinates(filteredFlatCoordinates, 2);
-    this.instructions.push([
-      CanvasInstruction.DRAW_IMAGE,
-      myBegin,
-      myEnd,
-      this.image_,
-      // Remaining arguments to DRAW_IMAGE are in alphabetical order
-      this.anchorX_ * this.imagePixelRatio_,
-      this.anchorY_ * this.imagePixelRatio_,
-      Math.ceil(this.height_ * this.imagePixelRatio_),
-      this.opacity_,
-      this.originX_ * this.imagePixelRatio_,
-      this.originY_ * this.imagePixelRatio_,
-      this.rotateWithView_,
-      this.rotation_,
-      [
-        (this.scale_[0] * this.pixelRatio) / this.imagePixelRatio_,
-        (this.scale_[1] * this.pixelRatio) / this.imagePixelRatio_,
-      ],
-      Math.ceil(this.width_ * this.imagePixelRatio_),
-      this.declutterMode_,
-      this.declutterImageWithText_,
-    ]);
-    this.hitDetectionInstructions.push([
-      CanvasInstruction.DRAW_IMAGE,
-      myBegin,
-      myEnd,
-      this.hitDetectionImage_,
-      // Remaining arguments to DRAW_IMAGE are in alphabetical order
-      this.anchorX_,
-      this.anchorY_,
-      this.height_,
-      1,
-      this.originX_,
-      this.originY_,
-      this.rotateWithView_,
-      this.rotation_,
-      this.scale_,
-      this.width_,
-      this.declutterMode_,
-      this.declutterImageWithText_,
-    ]);
+    const batchSize = MAX_IMAGE_POINTS_PER_BATCH * 2; // two entries per point
+    for (
+      let offset = 0;
+      offset < filteredFlatCoordinates.length;
+      offset += batchSize
+    ) {
+      const chunk = filteredFlatCoordinates.slice(
+        offset,
+        offset + batchSize,
+      );
+      const myBegin = this.coordinates.length;
+      const myEnd = this.appendFlatPointCoordinates(chunk, 2);
+      if (myEnd === myBegin) {
+        continue;
+      }
+      this.instructions.push([
+        CanvasInstruction.DRAW_IMAGE,
+        myBegin,
+        myEnd,
+        this.image_,
+        // Remaining arguments to DRAW_IMAGE are in alphabetical order
+        this.anchorX_ * this.imagePixelRatio_,
+        this.anchorY_ * this.imagePixelRatio_,
+        Math.ceil(this.height_ * this.imagePixelRatio_),
+        this.opacity_,
+        this.originX_ * this.imagePixelRatio_,
+        this.originY_ * this.imagePixelRatio_,
+        this.rotateWithView_,
+        this.rotation_,
+        [
+          (this.scale_[0] * this.pixelRatio) / this.imagePixelRatio_,
+          (this.scale_[1] * this.pixelRatio) / this.imagePixelRatio_,
+        ],
+        Math.ceil(this.width_ * this.imagePixelRatio_),
+        this.declutterMode_,
+        this.declutterImageWithText_,
+      ]);
+      this.hitDetectionInstructions.push([
+        CanvasInstruction.DRAW_IMAGE,
+        myBegin,
+        myEnd,
+        this.hitDetectionImage_,
+        // Remaining arguments to DRAW_IMAGE are in alphabetical order
+        this.anchorX_,
+        this.anchorY_,
+        this.height_,
+        1,
+        this.originX_,
+        this.originY_,
+        this.rotateWithView_,
+        this.rotation_,
+        this.scale_,
+        this.width_,
+        this.declutterMode_,
+        this.declutterImageWithText_,
+      ]);
+    }
     this.endGeometry(feature);
   }
 
@@ -295,3 +309,4 @@ class CanvasImageBuilder extends CanvasBuilder {
 }
 
 export default CanvasImageBuilder;
+const MAX_IMAGE_POINTS_PER_BATCH = 512;

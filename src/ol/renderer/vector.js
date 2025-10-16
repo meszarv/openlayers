@@ -2,7 +2,67 @@
  * @module ol/renderer/vector
  */
 import ImageState from '../ImageState.js';
+import {
+  applyTransform,
+  getHeight,
+  getWidth,
+  isEmpty as isEmptyExtent,
+} from '../extent.js';
 import {getUid} from '../util.js';
+
+const MIN_PIXEL_VISIBILITY = 1;
+
+const visibilityCache = new WeakMap();
+
+const now =
+  typeof performance !== 'undefined' && performance.now
+    ? () => performance.now()
+    : () => Date.now();
+
+function getGeometryVisibilityEntry(geometry, transform) {
+  const revision = geometry.getRevision ? geometry.getRevision() : 0;
+  const transformUid = transform ? getUid(transform) : null;
+  let entry = visibilityCache.get(geometry);
+  if (
+    entry &&
+    entry.revision === revision &&
+    entry.transformUid === transformUid
+  ) {
+    return entry;
+  }
+  let extent = geometry.getExtent();
+  if (transform) {
+    extent = applyTransform(extent.slice(), transform, undefined, 1);
+  }
+  const maxSize = Math.max(getWidth(extent), getHeight(extent));
+  const minResolution =
+    !isEmptyExtent(extent) && maxSize > 0
+      ? maxSize / MIN_PIXEL_VISIBILITY
+      : 0;
+  entry = {revision, transformUid, minResolution};
+  visibilityCache.set(geometry, entry);
+  return entry;
+}
+
+function calculateVisibleZoom(geometry, transform, resolution, currentZoom) {
+  if (
+    currentZoom === undefined ||
+    !isFinite(currentZoom) ||
+    resolution === undefined ||
+    !isFinite(resolution)
+  ) {
+    return undefined;
+  }
+  const {minResolution} = getGeometryVisibilityEntry(geometry, transform);
+  if (!minResolution || !isFinite(minResolution) || minResolution <= 0) {
+    return -Infinity;
+  }
+  const ratio = resolution / minResolution;
+  if (!isFinite(ratio) || ratio <= 0) {
+    return -Infinity;
+  }
+  return currentZoom + Math.log(ratio) / Math.LN2;
+}
 
 /**
  * Feature callback. The callback will be called with three arguments. The first
@@ -97,6 +157,9 @@ function renderCircleGeometry(builderGroup, geometry, style, feature, index) {
  * @param {import("../proj.js").TransformFunction} [transform] Transform from user to view projection.
  * @param {boolean} [declutter] Enable decluttering.
  * @param {number} [index] Render order index..
+ * @param {number} [resolution] View resolution in map units per pixel.
+ * @param {number} [zoom] Current view zoom.
+ * @param {{lod:number}|undefined} [timings] Timing bucket for LOD measurement.
  * @return {boolean} `true` if style is loading.
  */
 export function renderFeature(
@@ -108,6 +171,9 @@ export function renderFeature(
   transform,
   declutter,
   index,
+  resolution,
+  zoom,
+  timings,
 ) {
   const loadingPromises = [];
   const imageStyle = style.getImage();
@@ -141,6 +207,9 @@ export function renderFeature(
     transform,
     declutter,
     index,
+    resolution,
+    zoom,
+    timings,
   );
 
   return loading;
@@ -154,6 +223,9 @@ export function renderFeature(
  * @param {import("../proj.js").TransformFunction} [transform] Optional transform function.
  * @param {boolean} [declutter] Enable decluttering.
  * @param {number} [index] Render order index..
+ * @param {number} [resolution] View resolution in map units per pixel.
+ * @param {number} [zoom] Current view zoom.
+ * @param {{lod:number}|undefined} [timings] Timing bucket for LOD measurement.
  */
 function renderFeatureInternal(
   replayGroup,
@@ -163,6 +235,9 @@ function renderFeatureInternal(
   transform,
   declutter,
   index,
+  resolution,
+  zoom,
+  timings,
 ) {
   const geometry = style.getGeometryFunction()(feature);
   if (!geometry) {
@@ -172,6 +247,56 @@ function renderFeatureInternal(
     squaredTolerance,
     transform,
   );
+  const trackCounts =
+    !!timings &&
+    typeof timings.renderedFeatures === 'number' &&
+    typeof timings.skippedFeatures === 'number';
+  const canMeasureLod =
+    !!timings &&
+    typeof timings.lod === 'number' &&
+    zoom !== undefined &&
+    resolution !== undefined;
+  let lodStart;
+  if (canMeasureLod) {
+    lodStart = now();
+  }
+  if (zoom !== undefined && resolution !== undefined) {
+    const visibleZoom = calculateVisibleZoom(
+      geometry,
+      transform,
+      resolution,
+      zoom,
+    );
+    if (visibleZoom !== undefined) {
+      const canGet = typeof feature.get === 'function';
+      const canSet = typeof feature.set === 'function';
+      if (canSet) {
+        const previous = canGet ? feature.get('visibleFromZoom') : undefined;
+        const next =
+          previous === undefined || !isFinite(previous)
+            ? visibleZoom
+            : Math.max(previous, visibleZoom);
+        if (!canGet || next !== previous) {
+          feature.set('visibleFromZoom', next, true);
+        }
+      }
+      if (visibleZoom !== -Infinity && zoom < visibleZoom) {
+        if (canMeasureLod) {
+          timings.lod += Math.max(0, now() - lodStart);
+        }
+        if (trackCounts) {
+          timings.skippedFeatures += 1;
+        }
+        return;
+      }
+    }
+  }
+  if (trackCounts) {
+    timings.renderedFeatures += 1;
+  }
+  if (canMeasureLod) {
+    timings.lod += Math.max(0, now() - lodStart);
+  }
   const renderer = style.getRenderer();
   if (renderer) {
     renderGeometry(replayGroup, simplifiedGeometry, style, feature, index);
