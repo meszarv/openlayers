@@ -2,13 +2,18 @@
  * @module ol/renderer/vex/VectorLayer
  */
 
-import LayerRenderer from '../Layer.js';
-import {createVexContext} from '../../render/vex/context.js';
-import {createVexVectorContext} from '../../render/vex/VectorContext.js';
+import {listen, unlistenByKey} from '../../events.js';
 import RenderEvent from '../../render/Event.js';
 import RenderEventType from '../../render/EventType.js';
-import {listen, unlistenByKey} from '../../events.js';
+import {createVexVectorContext} from '../../render/vex/VectorContext.js';
+import {createVexContext} from '../../render/vex/context.js';
+import {
+  create as createTransform,
+  makeInverse,
+  multiply as multiplyTransform,
+} from '../../transform.js';
 import {getUid} from '../../util.js';
+import LayerRenderer from '../Layer.js';
 
 /**
  * Simple container factory for the Vex renderer.
@@ -81,6 +86,29 @@ class VexVectorLayerRenderer extends LayerRenderer {
      */
     this.currentSource_ = null;
 
+    /**
+     * @type {?import('../../transform.js').Transform}
+     * @private
+     */
+    this.sceneTransform_ = null;
+
+    /**
+     * @type {?import('../../transform.js').Transform}
+     * @private
+     */
+    this.sceneInverseTransform_ = null;
+
+    /**
+     * @type {number}
+     * @private
+     */
+    this.sceneRotation_ = 0;
+
+    /**
+     * @type {number}
+     * @private
+     */
+    this.scenePixelRatio_ = 1;
   }
 
   /**
@@ -180,7 +208,56 @@ class VexVectorLayerRenderer extends LayerRenderer {
   }
 
   /**
-   * @param {import('../../Feature.js').FeatureLike} feature Feature.
+   * @param {import('../../Map.js').FrameState} frameState Frame state.
+   * @return {import('../../transform.js').Transform} Device-space transform.
+   * @private
+   */
+  createDeviceTransform_(frameState) {
+    const transform = frameState.coordinateToPixelTransform.slice();
+    const pixelRatio = frameState.pixelRatio;
+    if (pixelRatio !== 1) {
+      for (let i = 0; i < 6; i += 1) {
+        transform[i] *= pixelRatio;
+      }
+    }
+    return transform;
+  }
+
+  /**
+   * Ensure the cached scene transform matches the current recording parameters.
+   * @param {import('../../Map.js').FrameState} frameState Frame state.
+   * @private
+   */
+  ensureSceneState_(frameState) {
+    const rotation = frameState.viewState.rotation;
+    const pixelRatio = frameState.pixelRatio;
+    const shouldReset =
+      !this.sceneTransform_ ||
+      rotation !== this.sceneRotation_ ||
+      pixelRatio !== this.scenePixelRatio_;
+    if (!shouldReset) {
+      return;
+    }
+
+    const hadScene = !!this.sceneTransform_;
+    this.sceneRotation_ = rotation;
+    this.scenePixelRatio_ = pixelRatio;
+    this.sceneTransform_ = this.createDeviceTransform_(frameState);
+    if (!this.sceneInverseTransform_) {
+      this.sceneInverseTransform_ = createTransform();
+    }
+    makeInverse(this.sceneInverseTransform_, this.sceneTransform_);
+
+    if (hadScene) {
+      this.recordedFeatureUids_.clear();
+      if (this.vexContext_) {
+        this.vexContext_.clean();
+      }
+    }
+  }
+
+  /**
+   * @param {Array<import('../../Feature.js').FeatureLike>} features Features.
    * @param {import('../../Map.js').FrameState} frameState Frame state.
    * @return {boolean} True when something was rendered.
    * @private
@@ -189,12 +266,6 @@ class VexVectorLayerRenderer extends LayerRenderer {
     const layer = this.getLayer();
     const styleFunction = layer.getStyleFunction();
     if (!styleFunction || !features.length) {
-      if (!styleFunction) {
-        console.warn('[VexRenderer] No style function available.');
-      }
-      if (!features.length) {
-        console.warn('[VexRenderer] No features to record.');
-      }
       return false;
     }
     const resolution = frameState.viewState.resolution;
@@ -204,32 +275,29 @@ class VexVectorLayerRenderer extends LayerRenderer {
     for (const feature of features) {
       const uid = getUid(feature);
       if (this.recordedFeatureUids_.has(uid)) {
-        console.log('[VexRenderer] Feature already recorded', uid);
         continue;
       }
       const styles = styleFunction(feature, resolution);
       if (!styles) {
-        console.warn('[VexRenderer] Feature returned no style', uid);
         this.recordedFeatureUids_.add(uid);
         continue;
       }
       const styleArray = Array.isArray(styles) ? styles : [styles];
       if (!styleArray.length) {
-        console.warn('[VexRenderer] Style array empty for feature', uid);
         this.recordedFeatureUids_.add(uid);
         continue;
       }
       if (!vectorContext) {
-        vectorContext = createVexVectorContext(this.vexContext_, frameState);
+        vectorContext = createVexVectorContext(this.vexContext_, frameState, {
+          pixelRatio: this.scenePixelRatio_,
+          rotation: this.sceneRotation_,
+          transform: this.sceneTransform_,
+        });
       }
       for (const style of styleArray) {
         if (!style) {
           continue;
         }
-        console.log('[VexRenderer] Drawing feature', {
-          uid,
-          geometryType: feature.getGeometry().getType(),
-        });
         vectorContext.drawFeature(feature, style);
         recorded = true;
       }
@@ -244,17 +312,28 @@ class VexVectorLayerRenderer extends LayerRenderer {
    * @private
    */
   updateSceneView_(frameState) {
-    if (!this.vexContext_) {
+    if (
+      !this.vexContext_ ||
+      !this.sceneTransform_ ||
+      !this.sceneInverseTransform_
+    ) {
       return;
     }
-    const {center, resolution} = frameState.viewState;
-    const pixelRatio = frameState.pixelRatio;
-    const halfSpanX = (frameState.size[0] * resolution) / 2;
-    const halfSpanY = (frameState.size[1] * resolution) / 2;
-    const x = center[0] - halfSpanX;
-    const y = center[1] + halfSpanY;
-    const zoom = resolution === 0 ? 1 : pixelRatio / resolution;
-    this.vexContext_.setSceneView(x, y, zoom);
+    const currentTransform = this.createDeviceTransform_(frameState);
+    const deltaTransform = multiplyTransform(
+      currentTransform,
+      this.sceneInverseTransform_,
+    );
+    const zoomX = deltaTransform[0];
+    const zoomY = deltaTransform[3];
+    const zoom =
+      Number.isFinite(zoomX) && Number.isFinite(zoomY)
+        ? (zoomX + zoomY) / 2
+        : 1;
+    const safeZoom = zoom === 0 ? 1 : zoom;
+    const x = -deltaTransform[4] / safeZoom;
+    const y = -deltaTransform[5] / safeZoom;
+    this.vexContext_.setSceneView(x, y, safeZoom);
   }
 
   /**
@@ -298,12 +377,10 @@ class VexVectorLayerRenderer extends LayerRenderer {
       return true;
     }
 
+    this.ensureSceneState_(frameState);
     const features = source.getFeatures();
     const recorded = this.recordFeatures_(features, frameState);
     if (recorded) {
-      console.log('[VexRenderer] Recorded features', {
-        count: features.length,
-      });
       this.vexContext_.commit();
     }
 

@@ -106,6 +106,7 @@ function getOffscreenSurface(canvas) {
 class VexRecorder {
   /**
    * @param {CanvasRenderingContext2D} nativeContext Native context.
+   * @param {HTMLCanvasElement|OffscreenCanvas} surface Target surface.
    */
   constructor(nativeContext, surface) {
     /** @type {CanvasRenderingContext2D} */
@@ -204,9 +205,6 @@ class VexRecorder {
    * Commit buffered instructions.
    */
   commit() {
-    console.log('[Vex] commit start', {
-      pending: this.instructions.length,
-    });
     this.preprocessInstructions();
     this.renderCompiledInstructions();
   }
@@ -238,11 +236,9 @@ class VexRecorder {
 
     ctx.save();
     const {x, y, zoom} = this.viewport;
-    const scaleX = zoom;
-    const scaleY = -zoom;
     const translateX = -x * zoom;
-    const translateY = y * zoom;
-    ctx.setTransform(scaleX, 0, 0, scaleY, translateX, translateY);
+    const translateY = -y * zoom;
+    ctx.setTransform(zoom, 0, 0, zoom, translateX, translateY);
 
     for (const instruction of this.compiledInstructions) {
       if (instruction.type === 'set') {
@@ -253,15 +249,12 @@ class VexRecorder {
     }
 
     ctx.restore();
-    console.log('[Vex] render complete', {
-      instructionCount: this.compiledInstructions.length,
-    });
   }
 
   /**
-   * @param {number} [x=0] Viewport x.
-   * @param {number} [y=0] Viewport y.
-   * @param {number} [zoom=1] Viewport zoom.
+   * @param {number} [x] Viewport x.
+   * @param {number} [y] Viewport y.
+   * @param {number} [zoom] Viewport zoom.
    */
   setSceneView(x = 0, y = 0, zoom = 1) {
     const safeX = Number.isFinite(x) ? x : 0;

@@ -1,17 +1,17 @@
+import Feature from '../src/ol/Feature.js';
 import Map from '../src/ol/Map.js';
 import View from '../src/ol/View.js';
-import Feature from '../src/ol/Feature.js';
-import Polygon from '../src/ol/geom/Polygon.js';
 import Point from '../src/ol/geom/Point.js';
-import VectorLayer from '../src/ol/layer/Vector.js';
+import Polygon from '../src/ol/geom/Polygon.js';
 import TileLayer from '../src/ol/layer/Tile.js';
-import VectorSource from '../src/ol/source/Vector.js';
+import VectorLayer from '../src/ol/layer/Vector.js';
+import {fromLonLat} from '../src/ol/proj.js';
 import OSM from '../src/ol/source/OSM.js';
+import VectorSource from '../src/ol/source/Vector.js';
+import CircleStyle from '../src/ol/style/Circle.js';
 import Fill from '../src/ol/style/Fill.js';
 import Stroke from '../src/ol/style/Stroke.js';
 import Style from '../src/ol/style/Style.js';
-import CircleStyle from '../src/ol/style/Circle.js';
-import {fromLonLat} from '../src/ol/proj.js';
 
 const neighborhoods = [
   [
