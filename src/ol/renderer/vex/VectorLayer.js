@@ -52,12 +52,6 @@ class VexVectorLayerRenderer extends LayerRenderer {
     this.container_.appendChild(this.canvas_);
 
     /**
-     * @type {CanvasRenderingContext2D|null}
-     * @private
-     */
-    this.nativeContext_ = this.canvas_.getContext('2d');
-
-    /**
      * @type {import('../../render/vex/context.js').VexContext|null}
      * @private
      */
@@ -86,6 +80,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
      * @private
      */
     this.currentSource_ = null;
+
   }
 
   /**
@@ -168,9 +163,6 @@ class VexVectorLayerRenderer extends LayerRenderer {
    * @private
    */
   resizeCanvas_(frameState) {
-    if (!this.nativeContext_) {
-      return;
-    }
     const size = frameState.size;
     const pixelRatio = frameState.pixelRatio;
     const width = Math.round(size[0] * pixelRatio);
@@ -179,6 +171,9 @@ class VexVectorLayerRenderer extends LayerRenderer {
     if (this.canvas_.width !== width || this.canvas_.height !== height) {
       this.canvas_.width = width;
       this.canvas_.height = height;
+      if (this.vexContext_ && typeof this.vexContext_.resize === 'function') {
+        this.vexContext_.resize(width, height);
+      }
     }
     this.canvas_.style.width = `${size[0]}px`;
     this.canvas_.style.height = `${size[1]}px`;
@@ -259,7 +254,6 @@ class VexVectorLayerRenderer extends LayerRenderer {
     const x = center[0] - halfSpanX;
     const y = center[1] + halfSpanY;
     const zoom = resolution === 0 ? 1 : pixelRatio / resolution;
-    console.log('[VexRenderer] setSceneView inputs', {x, y, zoom});
     this.vexContext_.setSceneView(x, y, zoom);
   }
 
@@ -273,12 +267,15 @@ class VexVectorLayerRenderer extends LayerRenderer {
     if (!layer.hasListener(type)) {
       return;
     }
+    if (!this.vexContext_) {
+      return;
+    }
     const identityTransform = [1, 0, 0, 1, 0, 0];
     const event = new RenderEvent(
       type,
       identityTransform,
       frameState,
-      this.nativeContext_,
+      this.vexContext_,
     );
     layer.dispatchEvent(event);
   }

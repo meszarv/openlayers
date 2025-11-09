@@ -55,20 +55,64 @@ function cloneValue(value) {
  *  commit: () => void,
  *  setSceneView: (x: number, y: number, zoom: number) => void,
  *  clean: () => void,
+ *  resize: (width: number, height: number) => void,
  *  instructionsCount: number
  * }} VexContext
  */
+
+/**
+ * @param {HTMLCanvasElement|OffscreenCanvas} canvas Canvas element.
+ * @return {HTMLCanvasElement|OffscreenCanvas} Offscreen target.
+ */
+function getOffscreenSurface(canvas) {
+  if (canvas && typeof canvas.transferControlToOffscreen === 'function') {
+    try {
+      return canvas.transferControlToOffscreen();
+    } catch {
+      // ignored
+    }
+  }
+  if (!('transferControlToOffscreen' in canvas)) {
+    Object.defineProperty(canvas, 'transferControlToOffscreen', {
+      value() {
+        if (!this.__olOffscreenShim) {
+          const source = this;
+          this.__olOffscreenShim = {
+            get width() {
+              return source.width;
+            },
+            set width(value) {
+              source.width = value;
+            },
+            get height() {
+              return source.height;
+            },
+            set height(value) {
+              source.height = value;
+            },
+            getContext(type, options) {
+              return source.getContext(type, options);
+            },
+          };
+        }
+        return this.__olOffscreenShim;
+      },
+      configurable: true,
+    });
+  }
+  return canvas.transferControlToOffscreen();
+}
 
 class VexRecorder {
   /**
    * @param {CanvasRenderingContext2D} nativeContext Native context.
    */
-  constructor(nativeContext) {
+  constructor(nativeContext, surface) {
     /** @type {CanvasRenderingContext2D} */
     this.native = nativeContext;
 
-    /** @type {HTMLCanvasElement} */
-    this.canvas = nativeContext.canvas;
+    /** @type {HTMLCanvasElement|OffscreenCanvas} */
+    this.canvas = surface;
 
     /** @type {Array<Object>} */
     this.instructions = [];
@@ -99,11 +143,11 @@ class VexRecorder {
         if (prop === 'clean') {
           return this.clean.bind(this);
         }
-        if (prop === 'canvas') {
-          return this.canvas;
-        }
         if (prop === 'instructionsCount') {
           return this.instructions.length;
+        }
+        if (prop === 'resize') {
+          return this.resize.bind(this);
         }
 
         const value = this.native[prop];
@@ -145,6 +189,15 @@ class VexRecorder {
   recordSet(name, value) {
     this.native[name] = value;
     this.instructions.push({type: 'set', name, value: cloneValue(value)});
+  }
+
+  /**
+   * @param {number} width Width.
+   * @param {number} height Height.
+   */
+  resize(width, height) {
+    this.canvas.width = width;
+    this.canvas.height = height;
   }
 
   /**
@@ -190,13 +243,6 @@ class VexRecorder {
     const translateX = -x * zoom;
     const translateY = y * zoom;
     ctx.setTransform(scaleX, 0, 0, scaleY, translateX, translateY);
-    console.log('[Vex] renderCompiledInstructions transform', {
-      zoom,
-      scaleX,
-      scaleY,
-      translateX,
-      translateY,
-    });
 
     for (const instruction of this.compiledInstructions) {
       if (instruction.type === 'set') {
@@ -222,13 +268,6 @@ class VexRecorder {
     const safeY = Number.isFinite(y) ? y : 0;
     const safeZoom = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
     this.viewport = {x: safeX, y: safeY, zoom: safeZoom};
-    console.log('[Vex] viewport update', {
-      inputX: safeX,
-      inputY: safeY,
-      storedX: this.viewport.x,
-      storedY: this.viewport.y,
-      zoom: safeZoom,
-    });
     if (this.compiledInstructions.length) {
       this.renderCompiledInstructions();
     }
@@ -255,7 +294,8 @@ class VexRecorder {
  */
 export function createVexContext(canvas) {
   return new Promise((resolve, reject) => {
-    const native = canvas.getContext('2d');
+    const surface = getOffscreenSurface(canvas);
+    const native = surface.getContext('2d');
     if (!native) {
       reject(new Error('Canvas 2D context is not available.'));
       return;
