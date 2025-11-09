@@ -1,0 +1,25 @@
+---
+layout: example.html
+title: Vex Vector Renderer (experimental)
+shortdesc: Demonstrates rendering a single feature through the Vex mock engine.
+docs: >
+  This example shows how to opt-in to the experimental Vex renderer for vector layers.
+  Only the first feature in the source is drawn once and reused for subsequent view
+  updates. Panning and zooming are handled by `setSceneView()` without re-issuing draw calls.
+tags: "vector,experimental"
+---
+<div id="map" class="map"></div>
+<div class="vex-controls">
+  <label class="toggle">
+    <input type="checkbox" id="use-vex" checked />
+    <span>Use Vex renderer</span>
+  </label>
+  <button id="zoom-features">Zoom to highlighted blocks</button>
+</div>
+<div class="vex-note">
+  <p>
+    When Vex is enabled, every feature is recorded exactly once and then reused
+    for panning and zooming via <code>setSceneView()</code>. Toggle the switch to
+    compare the experimental renderer with the standard Canvas 2D path.
+  </p>
+</div>
