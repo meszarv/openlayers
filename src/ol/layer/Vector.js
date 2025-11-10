@@ -84,7 +84,7 @@ class VectorLayer extends BaseVectorLayer {
      * @type {'canvas'|'vex'}
      * @private
      */
-    this.rendererHint_ = (options && options.rendererHint) || 'canvas';
+    this.rendererHint_ = (options && options.rendererHint) || (options && options['type']==='vex'&& options['type']) ||'canvas';
   }
 
   /**
