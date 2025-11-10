@@ -3,10 +3,12 @@
  */
 
 import {listen, unlistenByKey} from '../../events.js';
+import {buffer as bufferExtent, intersects} from '../../extent.js';
 import RenderEvent from '../../render/Event.js';
 import RenderEventType from '../../render/EventType.js';
 import {createVexVectorContext} from '../../render/vex/VectorContext.js';
 import {createVexContext} from '../../render/vex/context.js';
+import VectorSourceEventType from '../../source/VectorEventType.js';
 import {
   create as createTransform,
   makeInverse,
@@ -81,6 +83,12 @@ class VexVectorLayerRenderer extends LayerRenderer {
     this.featureListenerKey_ = null;
 
     /**
+     * @type {import('../events').EventsKey|null}
+     * @private
+     */
+    this.clearListenerKey_ = null;
+
+    /**
      * @type {import('../../source/Vector.js').default|null}
      * @private
      */
@@ -120,6 +128,17 @@ class VexVectorLayerRenderer extends LayerRenderer {
   }
 
   /**
+   * @private
+   */
+  handleSourceClear_() {
+    this.recordedFeatureUids_.clear();
+    if (this.vexContext_) {
+      this.vexContext_.clean();
+    }
+    this.getLayer().changed();
+  }
+
+  /**
    * @param {import('../../source/Vector.js').default} source Source.
    * @private
    */
@@ -129,8 +148,14 @@ class VexVectorLayerRenderer extends LayerRenderer {
     }
     this.featureListenerKey_ = listen(
       source,
-      'addfeature',
+      VectorSourceEventType.ADDFEATURE,
       this.handleSourceFeature_,
+      this,
+    );
+    this.clearListenerKey_ = listen(
+      source,
+      VectorSourceEventType.CLEAR,
+      this.handleSourceClear_,
       this,
     );
   }
@@ -139,11 +164,14 @@ class VexVectorLayerRenderer extends LayerRenderer {
    * @private
    */
   detachSourceListener_() {
-    if (!this.featureListenerKey_) {
-      return;
+    if (this.featureListenerKey_) {
+      unlistenByKey(this.featureListenerKey_);
+      this.featureListenerKey_ = null;
     }
-    unlistenByKey(this.featureListenerKey_);
-    this.featureListenerKey_ = null;
+    if (this.clearListenerKey_) {
+      unlistenByKey(this.clearListenerKey_);
+      this.clearListenerKey_ = null;
+    }
   }
 
   /**
@@ -268,6 +296,21 @@ class VexVectorLayerRenderer extends LayerRenderer {
     if (!styleFunction || !features.length) {
       return false;
     }
+    const viewExtent = frameState.extent;
+    const viewState = frameState.viewState;
+    let renderExtent = null;
+    if (viewExtent && viewState && Number.isFinite(viewState.resolution)) {
+      const renderBuffer = layer.getRenderBuffer
+        ? layer.getRenderBuffer()
+        : 0;
+      if (renderBuffer > 0) {
+        const bufferedExtent = viewExtent.slice();
+        bufferExtent(bufferedExtent, renderBuffer * viewState.resolution);
+        renderExtent = bufferedExtent;
+      } else {
+        renderExtent = viewExtent;
+      }
+    }
     const resolution = frameState.viewState.resolution;
     let vectorContext = null;
     let recorded = false;
@@ -275,6 +318,14 @@ class VexVectorLayerRenderer extends LayerRenderer {
     for (const feature of features) {
       const uid = getUid(feature);
       if (this.recordedFeatureUids_.has(uid)) {
+        continue;
+      }
+      const geometry = feature.getGeometry();
+      if (!geometry) {
+        this.recordedFeatureUids_.add(uid);
+        continue;
+      }
+      if (renderExtent && !intersects(renderExtent, geometry.getExtent())) {
         continue;
       }
       const styles = styleFunction(feature, resolution);

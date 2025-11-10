@@ -16,6 +16,8 @@ tags: "vector,experimental"
     <span>Use Vex renderer</span>
   </label>
   <button id="zoom-features">Zoom to highlighted blocks</button>
+  <button id="add-features">Add random plazas</button>
+  <button id="clear-layer">Clear vector layer</button>
 </div>
 <div class="vex-note">
   <p>
@@ -23,5 +25,10 @@ tags: "vector,experimental"
     then reused for panning and zooming via <code>setSceneView()</code>. Toggle
     the switch to compare the experimental renderer with the standard Canvas 2D
     path.
+  </p>
+  <p>
+    Use the buttons to append new plazas (<code>vectorLayer.addFeatures()</code>)
+    or clear the layer entirely (<code>vectorLayer.clear()</code>) and observe
+    how the cached instructions respond.
   </p>
 </div>

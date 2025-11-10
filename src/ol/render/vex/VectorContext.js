@@ -5,6 +5,8 @@
 import {create as createTransform} from '../../transform.js';
 import CanvasImmediateRenderer from '../canvas/Immediate.js';
 
+const FULL_SCENE_EXTENT = [-Infinity, -Infinity, Infinity, Infinity];
+
 /**
  * Create a vector context that records drawing commands into the Vex backing canvas.
  * @param {import('./context.js').VexContext} vexContext Vex context.
@@ -21,13 +23,14 @@ export function createVexVectorContext(vexContext, frameState, options = {}) {
     pixelRatio = frameState.pixelRatio || 1,
     rotation = frameState.viewState ? frameState.viewState.rotation : 0,
     transform,
+    extent = FULL_SCENE_EXTENT,
   } = options;
   const contextTransform =
     transform || frameState.coordinateToPixelTransform || createTransform();
   return new CanvasImmediateRenderer(
     vexContext,
     pixelRatio,
-    frameState.extent,
+    extent,
     contextTransform,
     rotation,
   );
