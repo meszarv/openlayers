@@ -171,13 +171,25 @@ function createRandomPlazaFeatures(count = 3) {
     const offsetY = (Math.random() - 0.5) * 2 * spread;
     const pointX = center[0] + offsetX;
     const pointY = center[1] + offsetY;
+    const hue = Math.floor(Math.random() * 360);
+    const pointColor = `hsl(${hue},85%,55%)`;
+    const polygonFill = `hsla(${hue},80%,60%,0.35)`;
+    const polygonStroke = `hsl(${hue},75%,35%)`;
     const point = new Point([pointX, pointY]);
-    features.push(
-      new Feature({
-        geometry: point,
-        name: `Added plaza ${Date.now()}-${i + 1}`,
+    const pointFeature = new Feature({
+      geometry: point,
+      name: `Added plaza ${Date.now()}-${i + 1}`,
+    });
+    pointFeature.setStyle(
+      new Style({
+        image: new CircleStyle({
+          radius: 8 + Math.random() * 4,
+          fill: new Fill({color: pointColor}),
+          stroke: new Stroke({color: '#0d1b2a', width: 2}),
+        }),
       }),
     );
+    features.push(pointFeature);
     const halfSize = resolution * (60 + Math.random() * 60);
     const polygonCoords = [
       [pointX - halfSize, pointY - halfSize],
@@ -186,12 +198,17 @@ function createRandomPlazaFeatures(count = 3) {
       [pointX - halfSize, pointY + halfSize],
       [pointX - halfSize, pointY - halfSize],
     ];
-    features.push(
-      new Feature({
-        geometry: new Polygon([polygonCoords]),
-        name: `Added plaza block ${Date.now()}-${i + 1}`,
+    const polygonFeature = new Feature({
+      geometry: new Polygon([polygonCoords]),
+      name: `Added plaza block ${Date.now()}-${i + 1}`,
+    });
+    polygonFeature.setStyle(
+      new Style({
+        fill: new Fill({color: polygonFill}),
+        stroke: new Stroke({color: polygonStroke, width: 3}),
       }),
     );
+    features.push(polygonFeature);
   }
   return features;
 }

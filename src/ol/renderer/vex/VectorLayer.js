@@ -292,8 +292,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
    */
   recordFeatures_(features, frameState) {
     const layer = this.getLayer();
-    const styleFunction = layer.getStyleFunction();
-    if (!styleFunction || !features.length) {
+    if (!features.length) {
       return false;
     }
     const viewExtent = frameState.extent;
@@ -326,6 +325,15 @@ class VexVectorLayerRenderer extends LayerRenderer {
         continue;
       }
       if (renderExtent && !intersects(renderExtent, geometry.getExtent())) {
+        continue;
+      }
+      const featureStyleFn = feature.getStyleFunction
+        ? feature.getStyleFunction()
+        : undefined;
+      const layerStyleFn = layer.getStyleFunction();
+      const styleFunction = featureStyleFn || layerStyleFn;
+      if (!styleFunction) {
+        this.recordedFeatureUids_.add(uid);
         continue;
       }
       const styles = styleFunction(feature, resolution);
