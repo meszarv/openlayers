@@ -236,9 +236,7 @@ class VexRecorder {
 
     ctx.save();
     const {x, y, zoom} = this.viewport;
-    const translateX = -x * zoom;
-    const translateY = -y * zoom;
-    ctx.setTransform(zoom, 0, 0, zoom, translateX, translateY);
+    ctx.setTransform(zoom, 0, 0, zoom, x, y);
 
     for (const instruction of this.compiledInstructions) {
       if (instruction.type === 'set') {

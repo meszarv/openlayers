@@ -331,8 +331,8 @@ class VexVectorLayerRenderer extends LayerRenderer {
         ? (zoomX + zoomY) / 2
         : 1;
     const safeZoom = zoom === 0 ? 1 : zoom;
-    const x = -deltaTransform[4] / safeZoom;
-    const y = -deltaTransform[5] / safeZoom;
+    const x = deltaTransform[4];
+    const y = deltaTransform[5];
     this.vexContext_.setSceneView(x, y, safeZoom);
   }
 
