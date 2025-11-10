@@ -56,11 +56,11 @@ function bindUi() {
     toggleButtons(false);
   });
 
-  cleanBtn.addEventListener('click', () => {
-    if (!vexCtx) return;
-    vexCtx.clean();
-    setStatus('Instructions cleared. Rebuild the base scene to draw again.');
-  });
+cleanBtn.addEventListener('click', () => {
+  if (!vexCtx) return;
+  vexCtx.clear();
+  setStatus('Instructions cleared. Rebuild the base scene to draw again.');
+});
 
   [panXInput, panYInput, zoomInput].forEach((input) => {
     input.addEventListener('input', () => {
@@ -76,7 +76,7 @@ function bindUi() {
 
 function rebuildBaseScene() {
   if (!vexCtx) return;
-  vexCtx.clean();
+  vexCtx.clear();
   drawBackground();
   drawGrid();
   drawDistricts();

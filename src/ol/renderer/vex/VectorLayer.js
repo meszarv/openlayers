@@ -133,7 +133,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
   handleSourceClear_() {
     this.recordedFeatureUids_.clear();
     if (this.vexContext_) {
-      this.vexContext_.clean();
+      this.vexContext_.clear();
     }
     this.getLayer().changed();
   }
@@ -279,7 +279,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
     if (hadScene) {
       this.recordedFeatureUids_.clear();
       if (this.vexContext_) {
-        this.vexContext_.clean();
+        this.vexContext_.clear();
       }
     }
   }

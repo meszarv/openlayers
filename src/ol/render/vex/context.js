@@ -54,7 +54,7 @@ function cloneValue(value) {
  * @typedef {CanvasRenderingContext2D & {
  *  commit: () => void,
  *  setSceneView: (x: number, y: number, zoom: number) => void,
- *  clean: () => void,
+ *  clear: () => void,
  *  resize: (width: number, height: number) => void,
  *  instructionsCount: number
  * }} VexContext
@@ -141,8 +141,8 @@ class VexRecorder {
         if (prop === 'setSceneView') {
           return this.setSceneView.bind(this);
         }
-        if (prop === 'clean') {
-          return this.clean.bind(this);
+        if (prop === 'clear') {
+          return this.clear.bind(this);
         }
         if (prop === 'instructionsCount') {
           return this.instructions.length;
@@ -267,7 +267,7 @@ class VexRecorder {
   /**
    * Reset all buffered instructions.
    */
-  clean() {
+  clear() {
     this.instructions = [];
     this.compiledInstructions = [];
     const ctx = this.native;
