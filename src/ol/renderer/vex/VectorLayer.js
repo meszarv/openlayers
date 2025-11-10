@@ -10,12 +10,15 @@ import {createVexVectorContext} from '../../render/vex/VectorContext.js';
 import {createVexContext} from '../../render/vex/context.js';
 import VectorSourceEventType from '../../source/VectorEventType.js';
 import {
+  compose as composeTransform,
   create as createTransform,
   makeInverse,
   multiply as multiplyTransform,
 } from '../../transform.js';
 import {getUid} from '../../util.js';
 import LayerRenderer from '../Layer.js';
+
+const SCENE_METERS_PER_PIXEL = 10;
 
 /**
  * Simple container factory for the Vex renderer.
@@ -117,6 +120,12 @@ class VexVectorLayerRenderer extends LayerRenderer {
      * @private
      */
     this.scenePixelRatio_ = 1;
+
+    /**
+     * @type {number|null}
+     * @private
+     */
+    this.sceneResolution_ = null;
   }
 
   /**
@@ -252,6 +261,47 @@ class VexVectorLayerRenderer extends LayerRenderer {
   }
 
   /**
+   * @param {import('../../Map.js').FrameState} frameState Frame state.
+   * @param {number} resolution Scene resolution in map units / pixel.
+   * @return {import('../../transform.js').Transform} Scene transform in device pixels.
+   * @private
+   */
+  createSceneTransform_(frameState, resolution) {
+    const transform = createTransform();
+    const viewState = frameState.viewState;
+    composeTransform(
+      transform,
+      frameState.size[0] / 2,
+      frameState.size[1] / 2,
+      1 / resolution,
+      -1 / resolution,
+      -viewState.rotation,
+      -viewState.center[0],
+      -viewState.center[1],
+    );
+    const pixelRatio = frameState.pixelRatio;
+    if (pixelRatio !== 1) {
+      for (let i = 0; i < 6; i += 1) {
+        transform[i] *= pixelRatio;
+      }
+    }
+    return transform;
+  }
+
+  /**
+   * @param {import('../../Map.js').FrameState} frameState Frame state.
+   * @return {number} Target scene resolution (map units / pixel).
+   * @private
+   */
+  computeSceneResolution_(frameState) {
+    const projection = frameState.viewState.projection;
+    const metersPerUnit =
+      (projection && projection.getMetersPerUnit()) || 1;
+    const resolution = SCENE_METERS_PER_PIXEL / metersPerUnit;
+    return resolution > 0 ? resolution : frameState.viewState.resolution;
+  }
+
+  /**
    * Ensure the cached scene transform matches the current recording parameters.
    * @param {import('../../Map.js').FrameState} frameState Frame state.
    * @private
@@ -259,10 +309,12 @@ class VexVectorLayerRenderer extends LayerRenderer {
   ensureSceneState_(frameState) {
     const rotation = frameState.viewState.rotation;
     const pixelRatio = frameState.pixelRatio;
+    const sceneResolution = this.computeSceneResolution_(frameState);
     const shouldReset =
       !this.sceneTransform_ ||
       rotation !== this.sceneRotation_ ||
-      pixelRatio !== this.scenePixelRatio_;
+      pixelRatio !== this.scenePixelRatio_ ||
+      sceneResolution !== this.sceneResolution_;
     if (!shouldReset) {
       return;
     }
@@ -270,7 +322,11 @@ class VexVectorLayerRenderer extends LayerRenderer {
     const hadScene = !!this.sceneTransform_;
     this.sceneRotation_ = rotation;
     this.scenePixelRatio_ = pixelRatio;
-    this.sceneTransform_ = this.createDeviceTransform_(frameState);
+    this.sceneResolution_ = sceneResolution;
+    this.sceneTransform_ = this.createSceneTransform_(
+      frameState,
+      sceneResolution,
+    );
     if (!this.sceneInverseTransform_) {
       this.sceneInverseTransform_ = createTransform();
     }
@@ -310,7 +366,8 @@ class VexVectorLayerRenderer extends LayerRenderer {
         renderExtent = viewExtent;
       }
     }
-    const resolution = frameState.viewState.resolution;
+    const resolution =
+      this.sceneResolution_ ?? frameState.viewState.resolution;
     let vectorContext = null;
     let recorded = false;
 

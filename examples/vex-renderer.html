@@ -19,6 +19,19 @@ tags: "vector,experimental"
   <button id="add-features">Add random plazas</button>
   <button id="clear-layer">Clear vector layer</button>
 </div>
+<section class="city-controls">
+  <h3>Generate Synthetic Districts</h3>
+  <label for="city-count">Target features (~<span id="city-count-value">50,000</span>)</label>
+  <div class="slider-actions">
+    <input id="city-count" type="range" min="1" max="50" value="5" step="1" />
+    <button id="city-apply" type="button">Generate</button>
+  </div>
+  <label class="extend-option">
+    <input id="city-extend" type="checkbox" />
+    Extend range up to 200 areas
+  </label>
+  <p id="generation-status" class="status">Ready to generate synthetic districts.</p>
+</section>
 <div class="vex-note">
   <p>
     When Vex is enabled, every feature is recorded exactly once per rotation and
