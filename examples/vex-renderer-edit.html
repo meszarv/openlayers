@@ -1,0 +1,81 @@
+---
+layout: example.html
+title: Vex Vector Renderer (experimental)
+shortdesc: Demonstrates caching vector instructions once per rotation with the Vex mock engine.
+docs: >
+  This example shows how to opt-in to the experimental Vex renderer for vector layers.
+  Features are recorded once for the current view rotation and then reused for
+  subsequent pan and zoom updates via `setSceneView()`. The scene is rebuilt only
+  when the view rotation or device pixel ratio changes.
+tags: "vector,experimental"
+---
+<div id="map" class="map"></div>
+<div class="vex-controls">
+  <label class="toggle">
+    <input type="checkbox" id="use-vex" checked />
+    <span>Use Vex renderer</span>
+  </label>
+  <button id="zoom-features">Zoom to highlighted blocks</button>
+  <button id="add-features">Add random plazas</button>
+  <button id="clear-layer">Clear vector layer</button>
+  <p id="renderer-debug" class="renderer-status status">
+    Renderer: pending...
+  </p>
+</div>
+<section class="city-controls">
+  <h3>Generate Synthetic Districts</h3>
+  <label for="city-count">Target features (~<span id="city-count-value">50,000</span>)</label>
+  <div class="slider-actions">
+    <input id="city-count" type="range" min="1" max="50" value="5" step="1" />
+    <button id="city-apply" type="button">Generate</button>
+  </div>
+  <label class="extend-option">
+    <input id="city-extend" type="checkbox" />
+    Extend range up to 200 areas
+  </label>
+  <p id="generation-status" class="status">Ready to generate synthetic districts.</p>
+  <button id="recolor-cities" type="button" class="palette-button">
+    Recolor synthetic districts
+  </button>
+</section>
+<section class="editing-controls">
+  <h3>Editing Playground</h3>
+  <label class="editing-toggle">
+    <input type="checkbox" id="editing-enabled" checked />
+    Enable select / modify / translate / snap interactions
+  </label>
+  <div class="editing-actions">
+    <label for="draw-type" class="visually-hidden">Draw mode</label>
+    <select id="draw-type">
+      <option value="none">Disable drawing</option>
+      <option value="Point">Draw points</option>
+      <option value="LineString">Draw lines</option>
+      <option value="Polygon" selected>Draw polygons</option>
+      <option value="Circle">Draw circles</option>
+    </select>
+    <button id="delete-selection" type="button">Delete selected</button>
+    <label for="interaction-mode" class="visually-hidden">Interaction mode</label>
+    <select id="interaction-mode" class="mode-select">
+      <option value="view">View mode (pan)</option>
+      <option value="select" selected>Edit mode (drag selection)</option>
+    </select>
+  </div>
+  <p id="editing-status" class="editing-status">
+    Editing interactions are ready. Select features to translate or drag their vertices.
+  </p>
+</section>
+<div class="vex-note">
+  <p>
+    When Vex is enabled, every feature is recorded exactly once per rotation and
+    then reused for panning and zooming via <code>setSceneView()</code>. Toggle
+    the switch to compare the experimental renderer with the standard Canvas 2D
+    path.
+  </p>
+  <p>
+    Use the buttons to append new plazas (<code>vectorLayer.addFeatures()</code>)
+    or clear the layer entirely (<code>vectorLayer.clear()</code>) and observe
+    how the cached instructions respond. Added plazas define their own styles via
+    <code>feature.setStyle()</code> so you can verify that feature-level styling
+    is respected.
+  </p>
+</div>

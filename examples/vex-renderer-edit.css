@@ -1,0 +1,183 @@
+.vex-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 1rem;
+}
+
+.vex-controls button {
+  padding: 0.4rem 0.9rem;
+  border-radius: 4px;
+  border: none;
+  background: #1976d2;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.vex-controls button:focus-visible {
+  outline: 2px solid #0d47a1;
+  outline-offset: 2px;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 600;
+}
+
+.toggle input {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
+.vex-note {
+  margin: 1rem;
+  padding: 0.75rem 1rem;
+  background: rgba(25, 118, 210, 0.08);
+  border-left: 3px solid #1976d2;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  color: #0d47a1;
+}
+
+.city-controls {
+  margin: 1rem;
+  padding: 1rem;
+  background: rgba(25, 118, 210, 0.05);
+  border-radius: 6px;
+  border: 1px solid rgba(25, 118, 210, 0.2);
+  max-width: 28rem;
+}
+
+.city-controls h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+  color: #0d47a1;
+}
+
+.city-controls label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+}
+
+.slider-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.slider-actions input[type='range'] {
+  flex: 1;
+}
+
+.slider-actions button {
+  padding: 0.35rem 0.8rem;
+  border: none;
+  border-radius: 4px;
+  background: #1976d2;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.extend-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  margin-bottom: 0.5rem;
+}
+
+.status {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #0d47a1;
+}
+
+.renderer-status {
+  flex-basis: 100%;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  color: #37474f;
+}
+
+.palette-button {
+  margin-top: 0.6rem;
+  padding: 0.35rem 0.8rem;
+  border: none;
+  border-radius: 4px;
+  background: #0d47a1;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mode-select {
+  min-width: 11rem;
+}
+
+.editing-controls {
+  margin: 1rem;
+  padding: 1rem;
+  background: rgba(76, 175, 80, 0.08);
+  border-radius: 6px;
+  border: 1px solid rgba(46, 125, 50, 0.2);
+  max-width: 32rem;
+}
+
+.editing-controls h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+  color: #1b5e20;
+}
+
+.editing-controls .editing-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.editing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.editing-actions select,
+.editing-actions button {
+  padding: 0.35rem 0.7rem;
+  border-radius: 4px;
+  border: 1px solid rgba(27, 94, 32, 0.4);
+  background: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.editing-actions button {
+  background: #2e7d32;
+  color: #fff;
+}
+
+.editing-status {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #1b5e20;
+}
