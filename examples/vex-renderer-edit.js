@@ -216,10 +216,9 @@ window.vexEditingToggle = editingToggle;
 let isEditMode = editingToggle ? editingToggle.checked : true;
 let interactionMode = modeSelect ? modeSelect.value : 'select';
 let vectorLayer = null;
-let currentRendererHint = null;
 
 const DEFAULT_RENDERER_SWITCH_ZOOM = 16;
-if (typeof window.vexRendererSwitchZoom !== 'number') {
+if (typeof window !== 'undefined' && typeof window.vexRendererSwitchZoom !== 'number') {
   window.vexRendererSwitchZoom = DEFAULT_RENDERER_SWITCH_ZOOM;
 }
 updateRendererDebug();
@@ -263,10 +262,10 @@ const STRUCTURED_COUNT =
   BASE_FEATURE_COUNTS.tables;
 
 const PLATES_PER_CITY = Math.max(0, FEATURES_PER_CITY - STRUCTURED_COUNT);
-applyRendererModeForCurrentZoom(true);
+mountVectorLayer(vexToggle ? vexToggle.checked : true);
 
 map.getView().on('change:resolution', () => {
-  applyRendererModeForCurrentZoom();
+  updateRendererDebug();
 });
 
 map.on('moveend', () => {
@@ -274,7 +273,7 @@ map.on('moveend', () => {
 });
 
 vexToggle?.addEventListener('change', () => {
-  applyRendererModeForCurrentZoom();
+  mountVectorLayer(vexToggle.checked);
 });
 
 zoomButton.addEventListener('click', () => {
@@ -329,7 +328,7 @@ applyInteractionState();
 function cycleCityPalette() {
   cityPaletteIndex = (cityPaletteIndex + 1) % CITY_PALETTES.length;
   cityStyles = createCityStyles(CITY_PALETTES[cityPaletteIndex]);
-  applyRendererModeForCurrentZoom(true);
+  mountVectorLayer(vexToggle ? vexToggle.checked : true);
   if (generationStatus) {
     generationStatus.textContent = `Updated synthetic district palette #${
       cityPaletteIndex + 1
@@ -343,8 +342,7 @@ function mountVectorLayer(useVex) {
   }
   vectorLayer = createVectorLayer(useVex);
   map.addLayer(vectorLayer);
-  currentRendererHint = useVex ? 'vex' : 'canvas';
-  updateRendererDebug(currentRendererHint);
+  updateRendererDebug();
   applyInteractionState();
 }
 
@@ -423,41 +421,15 @@ function setEditingStatusMessage(message) {
   }
 }
 
-function applyRendererModeForCurrentZoom(forceRemount = false) {
-  const desiredRenderer = determineRendererForCurrentState();
-  const useVex = desiredRenderer === 'vex';
-  if (forceRemount) {
-    mountVectorLayer(useVex);
-    return;
-  }
-  if (currentRendererHint !== desiredRenderer) {
-    mountVectorLayer(useVex);
-  } else {
-    updateRendererDebug(desiredRenderer);
-  }
-}
-
-function determineRendererForCurrentState() {
-  const view = map.getView();
-  const zoom = view ? view.getZoom() : null;
-  const threshold = getRendererSwitchZoom();
-  const allowVex = !vexToggle || vexToggle.checked;
-  if (!allowVex || typeof zoom !== 'number') {
-    return 'canvas';
-  }
-  return zoom < threshold ? 'vex' : 'canvas';
-}
-
 function getRendererSwitchZoom() {
-  const value = Number(window.vexRendererSwitchZoom);
-  if (!Number.isFinite(value)) {
-    window.vexRendererSwitchZoom = DEFAULT_RENDERER_SWITCH_ZOOM;
-    return DEFAULT_RENDERER_SWITCH_ZOOM;
-  }
-  return value;
+  const value =
+    typeof window !== 'undefined'
+      ? Number(window.vexRendererSwitchZoom)
+      : NaN;
+  return Number.isFinite(value) ? value : DEFAULT_RENDERER_SWITCH_ZOOM;
 }
 
-function updateRendererDebug(rendererHint = currentRendererHint) {
+function updateRendererDebug() {
   if (!rendererDebug) {
     return;
   }
@@ -466,12 +438,22 @@ function updateRendererDebug(rendererHint = currentRendererHint) {
   const zoomText =
     typeof zoomValue === 'number' ? zoomValue.toFixed(2) : 'unavailable';
   const threshold = getRendererSwitchZoom();
+  const rendererHint =
+    typeof vectorLayer?.getActiveRendererHint === 'function'
+      ? vectorLayer.getActiveRendererHint()
+      : vexToggle && vexToggle.checked
+        ? 'vex'
+        : 'canvas';
   const readableRenderer = rendererHint === 'vex' ? 'Vex' : 'Canvas';
   rendererDebug.textContent = `Renderer: ${readableRenderer} (${zoomText}/${threshold})`;
 }
 
 function refreshLayerCache() {
-  if (currentRendererHint === 'vex') {
+  const rendererHint =
+    typeof vectorLayer?.getActiveRendererHint === 'function'
+      ? vectorLayer.getActiveRendererHint()
+      : null;
+  if (rendererHint === 'vex') {
     mountVectorLayer(true);
   } else {
     vectorLayer?.changed();

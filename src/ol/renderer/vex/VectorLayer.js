@@ -126,6 +126,18 @@ class VexVectorLayerRenderer extends LayerRenderer {
      * @private
      */
     this.sceneResolution_ = null;
+
+    /**
+     * @type {number}
+     * @private
+     */
+    this.canvasPixelWidth_ = 0;
+
+    /**
+     * @type {number}
+     * @private
+     */
+    this.canvasPixelHeight_ = 0;
   }
 
   /**
@@ -218,8 +230,10 @@ class VexVectorLayerRenderer extends LayerRenderer {
   disposeInternal() {
     this.detachSourceListener_();
     this.container_.remove();
-    this.canvas_.width = 0;
-    this.canvas_.height = 0;
+    if (!this.canvas_.__olOffscreenTransferred) {
+      this.canvas_.width = 0;
+      this.canvas_.height = 0;
+    }
     super.disposeInternal();
   }
 
@@ -233,9 +247,16 @@ class VexVectorLayerRenderer extends LayerRenderer {
     const width = Math.round(size[0] * pixelRatio);
     const height = Math.round(size[1] * pixelRatio);
 
-    if (this.canvas_.width !== width || this.canvas_.height !== height) {
-      this.canvas_.width = width;
-      this.canvas_.height = height;
+    const sizeChanged =
+      this.canvasPixelWidth_ !== width || this.canvasPixelHeight_ !== height;
+    if (sizeChanged) {
+      this.canvasPixelWidth_ = width;
+      this.canvasPixelHeight_ = height;
+      const canResizeHtmlCanvas = !this.canvas_.__olOffscreenTransferred;
+      if (canResizeHtmlCanvas) {
+        this.canvas_.width = width;
+        this.canvas_.height = height;
+      }
       if (this.vexContext_ && typeof this.vexContext_.resize === 'function') {
         this.vexContext_.resize(width, height);
       }

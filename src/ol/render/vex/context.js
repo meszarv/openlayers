@@ -67,7 +67,14 @@ function cloneValue(value) {
 function getOffscreenSurface(canvas) {
   if (canvas && typeof canvas.transferControlToOffscreen === 'function') {
     try {
-      return canvas.transferControlToOffscreen();
+      const offscreen = canvas.transferControlToOffscreen();
+      if (
+        typeof OffscreenCanvas !== 'undefined' &&
+        offscreen instanceof OffscreenCanvas
+      ) {
+        canvas.__olOffscreenTransferred = true;
+      }
+      return offscreen;
     } catch {
       // ignored
     }
