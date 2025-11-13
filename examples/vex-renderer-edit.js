@@ -449,16 +449,15 @@ function updateRendererDebug() {
 }
 
 function refreshLayerCache() {
-  const rendererHint =
-    typeof vectorLayer?.getActiveRendererHint === 'function'
-      ? vectorLayer.getActiveRendererHint()
-      : null;
-  if (rendererHint === 'vex') {
-    mountVectorLayer(true);
-  } else {
-    vectorLayer?.changed();
-    vectorSource?.changed();
+  if (!vectorLayer) {
+    return;
   }
+  if (typeof vectorLayer.invalidateRendererCache === 'function') {
+    vectorLayer.invalidateRendererCache();
+  } else {
+    vectorLayer.changed();
+  }
+  vectorSource?.changed();
 }
 
 

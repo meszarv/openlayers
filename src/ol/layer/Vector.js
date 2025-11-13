@@ -408,6 +408,32 @@ class VectorLayer extends BaseVectorLayer {
     super.clearRenderer();
   }
 
+  /**
+   * Force the active or cached renderer to rebuild its recorded instructions.
+   */
+  invalidateRendererCache() {
+    let invalidated = false;
+    if (
+      this.renderer_ instanceof VexVectorLayerRenderer &&
+      typeof this.renderer_.invalidateCache === 'function'
+    ) {
+      this.renderer_.invalidateCache();
+      invalidated = true;
+    }
+    if (
+      this.cachedVexRenderer_ &&
+      typeof this.cachedVexRenderer_.invalidateCache === 'function'
+    ) {
+      this.cachedVexRenderer_.invalidateCache();
+      invalidated = true;
+    }
+    if (!invalidated) {
+      this.changed();
+      return;
+    }
+    this.changed();
+  }
+
 }
 
 export default VectorLayer;

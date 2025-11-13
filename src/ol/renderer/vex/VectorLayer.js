@@ -141,6 +141,16 @@ class VexVectorLayerRenderer extends LayerRenderer {
   }
 
   /**
+   * Clear cached drawing instructions so features will be re-recorded.
+   */
+  invalidateCache() {
+    this.recordedFeatureUids_.clear();
+    if (this.vexContext_) {
+      this.vexContext_.clear();
+    }
+  }
+
+  /**
    * @param {import('../../events/Event.js').default} event Event.
    * @private
    */
