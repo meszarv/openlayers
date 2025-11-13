@@ -143,6 +143,12 @@ class VectorLayer extends BaseVectorLayer {
      * @private
      */
     this.viewChangeKey_ = null;
+
+    /**
+     * @type {import("../renderer/vex/VectorLayer.js").default|null}
+     * @private
+     */
+    this.cachedVexRenderer_ = null;
   }
 
   /**
@@ -151,10 +157,11 @@ class VectorLayer extends BaseVectorLayer {
   createRenderer() {
     const rendererHint = this.getRendererHintForCurrentZoom_();
     this.activeRendererHint_ = rendererHint;
-    if (rendererHint === 'vex') {
-      return new VexVectorLayerRenderer(this);
+    const cached = this.acquireCachedRenderer_(rendererHint);
+    if (cached) {
+      return cached;
     }
-    return new CanvasVectorLayerRenderer(this);
+    return this.instantiateRenderer_(rendererHint);
   }
 
   /**
@@ -186,6 +193,10 @@ class VectorLayer extends BaseVectorLayer {
    */
   disposeInternal() {
     this.detachAutoSwitchListeners_();
+    if (this.cachedVexRenderer_) {
+      this.cachedVexRenderer_.dispose();
+      this.cachedVexRenderer_ = null;
+    }
     super.disposeInternal();
   }
 
@@ -291,9 +302,7 @@ class VectorLayer extends BaseVectorLayer {
     if (rendererHint === this.activeRendererHint_) {
       return;
     }
-    this.activeRendererHint_ = rendererHint;
-    this.clearRenderer();
-    this.changed();
+    this.switchRenderer_(rendererHint);
   }
 
   /**
@@ -321,6 +330,84 @@ class VectorLayer extends BaseVectorLayer {
     const view = map ? map.getView() : null;
     return view ? view.getZoom() : null;
   }
+
+  /**
+   * @param {'canvas'|'vex'} rendererHint Renderer hint.
+   * @private
+   */
+  switchRenderer_(rendererHint) {
+    const currentRenderer = this.renderer_;
+    if (currentRenderer) {
+      this.cacheRenderer_(currentRenderer);
+      this.renderer_ = null;
+      this.rendered = false;
+    }
+    const cached = this.acquireCachedRenderer_(rendererHint);
+    if (cached) {
+      this.renderer_ = cached;
+    } else {
+      this.renderer_ = this.instantiateRenderer_(rendererHint);
+    }
+    this.activeRendererHint_ = rendererHint;
+    this.changed();
+  }
+
+  /**
+   * @param {'canvas'|'vex'} rendererHint Renderer hint.
+   * @return {import("../renderer/Layer.js").default|null} Renderer instance.
+   * @private
+   */
+  acquireCachedRenderer_(rendererHint) {
+    if (rendererHint !== 'vex' || !this.cachedVexRenderer_) {
+      return null;
+    }
+    const renderer = this.cachedVexRenderer_;
+    this.cachedVexRenderer_ = null;
+    return renderer;
+  }
+
+  /**
+   * @param {'canvas'|'vex'} rendererHint Renderer hint.
+   * @return {import("../renderer/Layer.js").default}
+   * @private
+   */
+  instantiateRenderer_(rendererHint) {
+    if (rendererHint === 'vex') {
+      return new VexVectorLayerRenderer(this);
+    }
+    return new CanvasVectorLayerRenderer(this);
+  }
+
+  /**
+   * @param {import("../renderer/Layer.js").default} renderer Renderer to cache/dispose.
+   * @private
+   */
+  cacheRenderer_(renderer) {
+    if (renderer instanceof VexVectorLayerRenderer) {
+      const container =
+        /** @type {import("../renderer/vex/VectorLayer.js").default} */ (
+          renderer
+        ).container_;
+      if (container && container.parentNode) {
+        container.parentNode.removeChild(container);
+      }
+      this.cachedVexRenderer_ = renderer;
+      return;
+    }
+    renderer.dispose();
+  }
+
+  /**
+   * @override
+   */
+  clearRenderer() {
+    if (this.cachedVexRenderer_) {
+      this.cachedVexRenderer_.dispose();
+      this.cachedVexRenderer_ = null;
+    }
+    super.clearRenderer();
+  }
+
 }
 
 export default VectorLayer;
