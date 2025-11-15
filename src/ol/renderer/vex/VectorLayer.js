@@ -51,15 +51,11 @@ class VexVectorLayerRenderer extends LayerRenderer {
     /** @private */
     this.container_ = createContainer(vectorLayer);
 
-    /** @private */
-    this.canvas_ = document.createElement('canvas');
-    Object.assign(this.canvas_.style, {
-      position: 'absolute',
-      left: '0',
-      top: '0',
-      transformOrigin: 'top left',
-    });
-    this.container_.appendChild(this.canvas_);
+    /**
+     * @type {HTMLCanvasElement|null}
+     * @private
+     */
+    this.canvas_ = null;
 
     /**
      * @type {import('../../render/vex/context.js').VexContext|null}
@@ -186,11 +182,19 @@ class VexVectorLayerRenderer extends LayerRenderer {
   /**
    * @private
    */
-  ensureVexContext_() {
+  /**
+   * @param {import('../../Map.js').FrameState} [frameState] Frame state.
+   * @private
+   */
+  ensureVexContext_(frameState) {
     if (this.vexContext_ || this.vexInitPromise_) {
       return;
     }
-    this.vexInitPromise_ = createVexContext(this.canvas_).then((ctx) => {
+    const canvas = this.getCanvas_();
+    if (frameState) {
+      this.resizeCanvas_(frameState);
+    }
+    this.vexInitPromise_ = createVexContext(canvas).then((ctx) => {
       this.vexContext_ = ctx;
       this.vexInitPromise_ = null;
       this.getLayer().changed();
@@ -218,9 +222,32 @@ class VexVectorLayerRenderer extends LayerRenderer {
   disposeInternal() {
     this.detachSourceListener_();
     this.container_.remove();
-    this.canvas_.width = 0;
-    this.canvas_.height = 0;
+    if (this.canvas_) {
+      this.canvas_.width = 0;
+      this.canvas_.height = 0;
+      this.canvas_.remove();
+      this.canvas_ = null;
+    }
     super.disposeInternal();
+  }
+
+  /**
+   * @return {HTMLCanvasElement} Canvas element.
+   * @private
+   */
+  getCanvas_() {
+    if (!this.canvas_) {
+      const canvas = document.createElement('canvas');
+      Object.assign(canvas.style, {
+        position: 'absolute',
+        left: '0',
+        top: '0',
+        transformOrigin: 'top left',
+      });
+      this.container_.appendChild(canvas);
+      this.canvas_ = canvas;
+    }
+    return this.canvas_;
   }
 
   /**
@@ -232,6 +259,10 @@ class VexVectorLayerRenderer extends LayerRenderer {
     const pixelRatio = frameState.pixelRatio;
     const width = Math.round(size[0] * pixelRatio);
     const height = Math.round(size[1] * pixelRatio);
+
+    if (!this.canvas_) {
+      return;
+    }
 
     if (this.canvas_.width !== width || this.canvas_.height !== height) {
       this.canvas_.width = width;
@@ -341,48 +372,52 @@ class VexVectorLayerRenderer extends LayerRenderer {
   }
 
   /**
-   * @param {Array<import('../../Feature.js').FeatureLike>} features Features.
    * @param {import('../../Map.js').FrameState} frameState Frame state.
+   * @return {import('../../extent.js').Extent|null} Buffered render extent.
+   * @private
+   */
+  computeRenderExtent_(frameState) {
+    const viewExtent = frameState.extent;
+    const viewState = frameState.viewState;
+    if (!viewExtent || !viewState || !Number.isFinite(viewState.resolution)) {
+      return null;
+    }
+    const layer = this.getLayer();
+    const renderBuffer = layer.getRenderBuffer ? layer.getRenderBuffer() : 0;
+    if (!renderBuffer) {
+      return viewExtent;
+    }
+    const bufferedExtent = viewExtent.slice();
+    bufferExtent(bufferedExtent, renderBuffer * viewState.resolution);
+    return bufferedExtent;
+  }
+
+  /**
+   * @param {import('../../source/Vector.js').default} source Source.
+   * @param {import('../../Map.js').FrameState} frameState Frame state.
+   * @param {import('../../extent.js').Extent|null} renderExtent Extent to process.
    * @return {boolean} True when something was rendered.
    * @private
    */
-  recordFeatures_(features, frameState) {
+  recordFeatures_(source, frameState, renderExtent) {
     const layer = this.getLayer();
-    if (!features.length) {
+    if (!source) {
       return false;
-    }
-    const viewExtent = frameState.extent;
-    const viewState = frameState.viewState;
-    let renderExtent = null;
-    if (viewExtent && viewState && Number.isFinite(viewState.resolution)) {
-      const renderBuffer = layer.getRenderBuffer
-        ? layer.getRenderBuffer()
-        : 0;
-      if (renderBuffer > 0) {
-        const bufferedExtent = viewExtent.slice();
-        bufferExtent(bufferedExtent, renderBuffer * viewState.resolution);
-        renderExtent = bufferedExtent;
-      } else {
-        renderExtent = viewExtent;
-      }
     }
     const resolution =
       this.sceneResolution_ ?? frameState.viewState.resolution;
     let vectorContext = null;
     let recorded = false;
 
-    for (const feature of features) {
+    const processFeature = (feature) => {
       const uid = getUid(feature);
       if (this.recordedFeatureUids_.has(uid)) {
-        continue;
+        return;
       }
       const geometry = feature.getGeometry();
       if (!geometry) {
         this.recordedFeatureUids_.add(uid);
-        continue;
-      }
-      if (renderExtent && !intersects(renderExtent, geometry.getExtent())) {
-        continue;
+        return;
       }
       const featureStyleFn = feature.getStyleFunction
         ? feature.getStyleFunction()
@@ -391,17 +426,23 @@ class VexVectorLayerRenderer extends LayerRenderer {
       const styleFunction = featureStyleFn || layerStyleFn;
       if (!styleFunction) {
         this.recordedFeatureUids_.add(uid);
-        continue;
+        return;
       }
       const styles = styleFunction(feature, resolution);
       if (!styles) {
         this.recordedFeatureUids_.add(uid);
-        continue;
+        return;
       }
       const styleArray = Array.isArray(styles) ? styles : [styles];
       if (!styleArray.length) {
         this.recordedFeatureUids_.add(uid);
-        continue;
+        return;
+      }
+      if (!this.vexContext_) {
+        this.ensureVexContext_(frameState);
+      }
+      if (!this.vexContext_) {
+        return;
       }
       if (!vectorContext) {
         vectorContext = createVexVectorContext(this.vexContext_, frameState, {
@@ -418,6 +459,32 @@ class VexVectorLayerRenderer extends LayerRenderer {
         recorded = true;
       }
       this.recordedFeatureUids_.add(uid);
+    };
+
+    let usedSpatialIndex = false;
+    if (
+      renderExtent &&
+      typeof source.forEachFeatureInExtent === 'function'
+    ) {
+      source.forEachFeatureInExtent(renderExtent, processFeature);
+      usedSpatialIndex = true;
+    }
+
+    if (!usedSpatialIndex) {
+      const features = source.getFeatures();
+      if (!features.length) {
+        return false;
+      }
+      for (const feature of features) {
+        if (
+          renderExtent &&
+          feature.getGeometry() &&
+          !intersects(renderExtent, feature.getGeometry().getExtent())
+        ) {
+          continue;
+        }
+        processFeature(feature);
+      }
     }
 
     return recorded;
@@ -486,17 +553,12 @@ class VexVectorLayerRenderer extends LayerRenderer {
     }
 
     this.resizeCanvas_(frameState);
-    this.ensureVexContext_();
     this.syncSourceListeners_(source);
 
-    if (!this.vexContext_) {
-      return true;
-    }
-
     this.ensureSceneState_(frameState);
-    const features = source.getFeatures();
-    const recorded = this.recordFeatures_(features, frameState);
-    if (recorded) {
+    const renderExtent = this.computeRenderExtent_(frameState);
+    const recorded = this.recordFeatures_(source, frameState, renderExtent);
+    if (recorded && this.vexContext_) {
       this.vexContext_.commit();
     }
 
