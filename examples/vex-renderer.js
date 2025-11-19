@@ -150,6 +150,7 @@ const cityCountInput = document.getElementById('city-count');
 const cityCountValue = document.getElementById('city-count-value');
 const cityApplyButton = document.getElementById('city-apply');
 const cityExtendInput = document.getElementById('city-extend');
+const separateLayersInput = document.getElementById('city-separate-layers');
 const generationStatus = document.getElementById('generation-status');
 
 const DEFAULT_MAX_CITIES = 50;
@@ -192,17 +193,20 @@ const STRUCTURED_COUNT =
 
 const PLATES_PER_CITY = Math.max(0, FEATURES_PER_CITY - STRUCTURED_COUNT);
 
-let vectorLayer = createVectorLayer(vexToggle.checked);
-map.addLayer(vectorLayer);
+const syntheticLayers = [];
+let syntheticCityBatches = [];
+let syntheticExtent = null;
+
+let vectorLayer = null;
+rebuildBaseVectorLayer();
 
 vexToggle.addEventListener('change', () => {
-  map.removeLayer(vectorLayer);
-  vectorLayer = createVectorLayer(vexToggle.checked);
-  map.addLayer(vectorLayer);
+  rebuildBaseVectorLayer();
+  applySyntheticCityData();
 });
 
 zoomButton.addEventListener('click', () => {
-  const extent = vectorSource.getExtent();
+  const extent = getCombinedExtent();
   if (extent) {
     map.getView().fit(extent, {
       padding: [40, 40, 40, 40],
@@ -218,6 +222,10 @@ addFeaturesButton.addEventListener('click', () => {
 
 clearLayerButton.addEventListener('click', () => {
   vectorLayer.clear();
+  clearSyntheticCityData();
+  generationStatus &&
+    (generationStatus.textContent =
+      'Cleared all vector features and synthetic districts.');
 });
 
 cityCountInput?.addEventListener('input', () => {
@@ -231,18 +239,23 @@ cityExtendInput?.addEventListener('change', () => {
   reportGenerationReady();
 });
 
+separateLayersInput?.addEventListener('change', () => {
+  applySyntheticCityData();
+});
+
 cityApplyButton?.addEventListener('click', regenerateSyntheticCities);
 
 applySliderLimit();
 updateCityCountLabel();
 reportGenerationReady();
 
-function createVectorLayer(useVex) {
+function createVectorLayer(useVex, source, className = 'ol-layer') {
   const layer = new VectorLayer({
     rendererHint: useVex ? 'vex' : 'canvas',
-    source: vectorSource,
+    source,
     style: styleFunction,
     opacity: 0.95,
+    className,
   });
   if (typeof layer.addFeatures !== 'function') {
     layer.addFeatures = function addFeatures(features) {
@@ -261,6 +274,94 @@ function createVectorLayer(useVex) {
     };
   }
   return layer;
+}
+
+function rebuildBaseVectorLayer() {
+  if (vectorLayer) {
+    map.removeLayer(vectorLayer);
+  }
+  vectorLayer = createVectorLayer(
+    vexToggle.checked,
+    vectorSource,
+    `base-layer-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
+  map.addLayer(vectorLayer);
+}
+
+function isSeparationEnabled() {
+  return !!separateLayersInput?.checked;
+}
+
+function removeSyntheticLayers() {
+  while (syntheticLayers.length) {
+    const layer = syntheticLayers.pop();
+    map.removeLayer(layer);
+  }
+}
+
+function clearSyntheticCityData() {
+  generationToken += 1;
+  syntheticCityBatches = [];
+  syntheticExtent = null;
+  removeSyntheticLayers();
+  removeSyntheticFeaturesFromBase();
+}
+
+function removeSyntheticFeaturesFromBase() {
+  const sourceFeatures = vectorSource.getFeatures();
+  const removable = [];
+  for (const feature of sourceFeatures) {
+    if (feature.get('cityId') !== undefined) {
+      removable.push(feature);
+    }
+  }
+  for (const feature of removable) {
+    vectorSource.removeFeature(feature);
+  }
+}
+
+function cloneSyntheticFeature(feature) {
+  const clone = feature.clone();
+  clone.set('cityId', feature.get('cityId'));
+  return clone;
+}
+
+function addSyntheticFeaturesToBase() {
+  if (!syntheticCityBatches.length) {
+    return;
+  }
+  const clones = [];
+  for (const batch of syntheticCityBatches) {
+    for (const feature of batch.features) {
+      clones.push(cloneSyntheticFeature(feature));
+    }
+  }
+  if (clones.length) {
+    vectorSource.addFeatures(clones);
+  }
+}
+
+function applySyntheticCityData() {
+  removeSyntheticFeaturesFromBase();
+  removeSyntheticLayers();
+  if (!syntheticCityBatches.length) {
+    return;
+  }
+  if (isSeparationEnabled()) {
+    for (const batch of syntheticCityBatches) {
+      const source = new VectorSource({
+        features: batch.features.map((feature) => cloneSyntheticFeature(feature)),
+      });
+      const className = `synthetic-layer-${batch.features[0]?.get('cityId') ?? 'city'}-${Math.random()
+        .toString(36)
+        .slice(2)}`;
+      const layer = createVectorLayer(vexToggle.checked, source, className);
+      map.addLayer(layer);
+      syntheticLayers.push(layer);
+    }
+    return;
+  }
+  addSyntheticFeaturesToBase();
 }
 
 function createRandomPlazaFeatures(count = 3) {
@@ -342,7 +443,10 @@ function reportGenerationReady() {
   }
   const pendingCities = Number(cityCountInput.value);
   const pendingFeatures = pendingCities * FEATURES_PER_CITY;
-  generationStatus.textContent = `Ready to generate approximately ${pendingFeatures.toLocaleString()} synthetic features (${pendingCities.toLocaleString()} city area${pendingCities === 1 ? '' : 's'}).`;
+  const layeringNote = isSeparationEnabled()
+    ? ' Synthetic districts will render in separate layers.'
+    : '';
+  generationStatus.textContent = `Ready to generate approximately ${pendingFeatures.toLocaleString()} synthetic features (${pendingCities.toLocaleString()} city area${pendingCities === 1 ? '' : 's'}).${layeringNote}`;
 }
 
 function createBounds(center, size) {
@@ -631,26 +735,68 @@ function regenerateSyntheticCities() {
     if (token !== generationToken) {
       return;
     }
-    const syntheticFeatures = [];
+    const batches = [];
     let extent = null;
+    let syntheticFeatureCount = 0;
     for (let i = 0; i < requestedCities; ++i) {
       const {features, bounds} = generateCityFeatures(i, requestedCities);
-      syntheticFeatures.push(...features);
+      for (const feature of features) {
+        feature.set('cityId', i);
+      }
+      batches.push({features, bounds});
       extent = extendExtent(extent, bounds);
+      syntheticFeatureCount += features.length;
     }
+    syntheticCityBatches = batches;
+    syntheticExtent = extent ? extent.slice() : null;
     vectorSource.clear(true);
-    vectorSource.addFeatures(initialFeatures.concat(syntheticFeatures));
-    const totalRendered = initialFeatures.length + syntheticFeatures.length;
-    generationStatus.textContent = `Rendered ${totalRendered.toLocaleString()} features (including ${requestedCities.toLocaleString()} synthetic city area${requestedCities === 1 ? '' : 's'}).`;
-    if (extent && hasInitialExtent) {
-      extent = extendExtent(extent, initialExtent);
+    vectorSource.addFeatures(initialFeatures);
+    applySyntheticCityData();
+    const totalRendered = initialFeatures.length + syntheticFeatureCount;
+    const areaText = `${requestedCities.toLocaleString()} synthetic city area${
+      requestedCities === 1 ? '' : 's'
+    }`;
+    const layeringText = isSeparationEnabled()
+      ? ' (each district rendered in its own layer)'
+      : '';
+    generationStatus.textContent = `Rendered ${totalRendered.toLocaleString()} features (including ${areaText})${layeringText}.`;
+    let fitExtent = syntheticExtent ? syntheticExtent.slice() : null;
+    if (fitExtent && hasInitialExtent) {
+      fitExtent = extendExtent(fitExtent, initialExtent);
+    } else if (!fitExtent && hasInitialExtent) {
+      fitExtent = initialExtent.slice();
     }
-    if (extent) {
-      map.getView().fit(extent, {
+    if (fitExtent) {
+      map.getView().fit(fitExtent, {
         padding: [80, 80, 80, 80],
         duration: 400,
         maxZoom: 12,
       });
     }
   }, 0);
+}
+
+function hasFiniteExtent(extent) {
+  if (!extent) {
+    return false;
+  }
+  return (
+    Number.isFinite(extent[0]) &&
+    Number.isFinite(extent[1]) &&
+    Number.isFinite(extent[2]) &&
+    Number.isFinite(extent[3]) &&
+    extent[0] <= extent[2] &&
+    extent[1] <= extent[3]
+  );
+}
+
+function getCombinedExtent() {
+  const baseExtent = vectorSource.getExtent();
+  let combined = hasFiniteExtent(baseExtent) ? baseExtent.slice() : null;
+  if (syntheticExtent && hasFiniteExtent(syntheticExtent)) {
+    combined = combined
+      ? extendExtent(combined, syntheticExtent)
+      : syntheticExtent.slice();
+  }
+  return combined;
 }
