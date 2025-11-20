@@ -2,7 +2,6 @@
  * @module ol/layer/Vector
  */
 import CanvasVectorLayerRenderer from '../renderer/canvas/VectorLayer.js';
-import VexVectorLayerRenderer from '../renderer/vex/VectorLayer.js';
 import BaseVectorLayer from './BaseVector.js';
 
 /**
@@ -54,7 +53,6 @@ import BaseVectorLayer from './BaseVector.js';
  * @property {boolean} [updateWhileInteracting=false] When set to `true`, feature batches will
  * be recreated during interactions. See also `updateWhileAnimating`.
  * @property {Object<string, *>} [properties] Arbitrary observable properties. Can be accessed with `#get()` and `#set()`.
- * @property {'canvas'|'vex'} [rendererHint='canvas'] Experimental renderer selection.
  */
 
 /**
@@ -79,21 +77,12 @@ class VectorLayer extends BaseVectorLayer {
    */
   constructor(options) {
     super(options);
-
-    /**
-     * @type {'canvas'|'vex'}
-     * @private
-     */
-    this.rendererHint_ = (options && options.rendererHint) || (options && options['type']==='vex'&& options['type']) ||'canvas';
   }
 
   /**
    * @override
    */
   createRenderer() {
-    if (this.rendererHint_ === 'vex') {
-      return new VexVectorLayerRenderer(this);
-    }
     return new CanvasVectorLayerRenderer(this);
   }
 }
