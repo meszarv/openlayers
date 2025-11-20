@@ -13,6 +13,8 @@ import Style from '../src/ol/style/Style.js';
 
 const cityCountInput = document.getElementById('city-count');
 const cityCountValue = document.getElementById('city-count-value');
+const layerCountInput = document.getElementById('layer-count');
+const layerCountValue = document.getElementById('layer-count-value');
 const applyButton = document.getElementById('city-apply');
 const extendRangeInput = document.getElementById('city-extend');
 const statusElement = document.getElementById('generation-status');
@@ -20,6 +22,8 @@ const renderStatsElement = document.getElementById('render-stats');
 
 const DEFAULT_MAX_CITIES = 50;
 const EXTENDED_MAX_CITIES = 200;
+const DEFAULT_LAYER_COUNT = 1;
+const MAX_LAYER_COUNT = 100;
 
 const FEATURES_PER_CITY = 10000;
 const CITY_SIZE = 200000;
@@ -100,30 +104,53 @@ const LEVEL_PROPERTIES = {
   plate: Object.freeze({level: 'plate'}),
 };
 
-const vectorSource = new VectorSource();
-const vectorLayer = new VectorLayer({
-  source: vectorSource,
-  style: (feature) => styles[feature.get('level')],
+const styleForFeature = (feature) => styles[feature.get('level')];
+
+const baseLayer = new TileLayer({
+  source: new OSM(),
 });
+
+const vectorLayers = [];
+let layerClassCounter = 0;
+
+function nextLayerClassName() {
+  layerClassCounter += 1;
+  return `ol-layer cluster-layer-${layerClassCounter}`;
+}
+
+function createVectorLayer() {
+  return new VectorLayer({
+    source: new VectorSource(),
+    style: styleForFeature,
+    className: nextLayerClassName(),
+  });
+}
 
 const map = new Map({
   target: 'map',
-  layers: [
-    new TileLayer({
-      source: new OSM(),
-    }),
-    vectorLayer,
-  ],
+  layers: [baseLayer],
   view: new View({
     center: [0, 0],
     zoom: 3,
   }),
 });
 
-const layerUid = getUid(vectorLayer);
 let lastFrameTimestamp = null;
 let frameSequence = 0;
 const frameHistory = [];
+
+function updateLayerCollection(targetCount) {
+  const count = Math.min(Math.max(targetCount, 1), MAX_LAYER_COUNT);
+  while (vectorLayers.length > count) {
+    const layer = vectorLayers.pop();
+    map.removeLayer(layer);
+  }
+  while (vectorLayers.length < count) {
+    const layer = createVectorLayer();
+    vectorLayers.push(layer);
+    map.addLayer(layer);
+  }
+}
 
 map.on('postrender', (event) => {
   if (!renderStatsElement) {
@@ -134,16 +161,29 @@ map.on('postrender', (event) => {
   if (!timingsMap) {
     return;
   }
-  const timings = timingsMap.get(layerUid);
-  if (!timings) {
+  let build = 0;
+  let draw = 0;
+  let lod = 0;
+  let rendered = 0;
+  let skipped = 0;
+  let total = 0;
+  let layerTimingsCount = 0;
+  for (let i = 0; i < vectorLayers.length; ++i) {
+    const timings = timingsMap.get(getUid(vectorLayers[i]));
+    if (!timings) {
+      continue;
+    }
+    build += timings.build ?? 0;
+    draw += timings.draw ?? 0;
+    lod += timings.lod ?? 0;
+    rendered += timings.renderedFeatures ?? 0;
+    skipped += timings.skippedFeatures ?? 0;
+    total += timings.total ?? 0;
+    layerTimingsCount += 1;
+  }
+  if (!layerTimingsCount) {
     return;
   }
-  const build = timings.build ?? 0;
-  const draw = timings.draw ?? 0;
-  const lod = timings.lod ?? 0;
-  const rendered = timings.renderedFeatures ?? 0;
-  const skipped = timings.skippedFeatures ?? 0;
-  const total = timings.total ?? 0;
   const zoom = frameState.viewState?.zoom ?? null;
   const currentTime = frameState.time;
   let fps = null;
@@ -162,6 +202,7 @@ map.on('postrender', (event) => {
     total,
     zoom,
     fps,
+    layerCount: vectorLayers.length,
   };
   frameHistory.push(entry);
   if (frameHistory.length > 120) {
@@ -176,7 +217,7 @@ map.on('postrender', (event) => {
     .reverse()
     .map((item) => {
       const label = `#${String(item.index).padStart(5, ' ')}`;
-      return `${label} | Zoom: ${formatZoom(item.zoom)} | Build: ${format(item.build)} ms | Draw: ${format(item.draw)} ms | LOD: ${format(item.lod)} ms | Total: ${format(item.total)} ms | Rendered: ${formatCount(item.rendered)} | Skipped: ${formatCount(item.skipped)} | FPS: ${formatFps(item.fps)}`;
+      return `${label} | Layers: ${item.layerCount} | Zoom: ${formatZoom(item.zoom)} | Build: ${format(item.build)} ms | Draw: ${format(item.draw)} ms | LOD: ${format(item.lod)} ms | Total: ${format(item.total)} ms | Rendered: ${formatCount(item.rendered)} | Skipped: ${formatCount(item.skipped)} | FPS: ${formatFps(item.fps)}`;
     });
   renderStatsElement.textContent = lines.join(`
 `);
@@ -187,6 +228,13 @@ function updateCityCountLabel() {
     return;
   }
   cityCountValue.textContent = cityCountInput.value;
+}
+
+function updateLayerCountLabel() {
+  if (!layerCountInput || !layerCountValue) {
+    return;
+  }
+  layerCountValue.textContent = layerCountInput.value;
 }
 
 function applySliderLimit() {
@@ -206,7 +254,8 @@ function reportPendingSelection() {
     return;
   }
   const pendingCities = Number(cityCountInput?.value ?? DEFAULT_MAX_CITIES);
-  statusElement.textContent = `Ready to render ${pendingCities.toLocaleString()} city area(s). Click Apply to update the map.`;
+  const pendingLayers = Number(layerCountInput?.value ?? DEFAULT_LAYER_COUNT);
+  statusElement.textContent = `Ready to render ${pendingCities.toLocaleString()} city area(s) split into ${pendingLayers} layer(s). Click Apply to update the map.`;
 }
 
 function createBounds(center, size) {
@@ -536,16 +585,24 @@ let generationToken = 0;
 function regenerate() {
   applySliderLimit();
   const requestedCities = Number(cityCountInput.value);
+  const requestedLayers = Math.min(
+    Math.max(Number(layerCountInput?.value ?? DEFAULT_LAYER_COUNT), 1),
+    MAX_LAYER_COUNT,
+  );
   updateCityCountLabel();
+  updateLayerCountLabel();
   const token = ++generationToken;
   const totalTarget = requestedCities * FEATURES_PER_CITY;
-  statusElement.textContent = `Generating ${requestedCities} city area(s) with ${totalTarget.toLocaleString()} features...`;
+  statusElement.textContent = `Generating ${requestedCities} city area(s) with ${totalTarget.toLocaleString()} features split across ${requestedLayers} layer(s)...`;
 
   setTimeout(() => {
     if (token !== generationToken) {
       return;
     }
-    vectorSource.clear(true);
+    updateLayerCollection(requestedLayers);
+    for (let i = 0; i < vectorLayers.length; ++i) {
+      vectorLayers[i].getSource().clear(true);
+    }
 
     const allFeatures = [];
     let extent = null;
@@ -555,8 +612,18 @@ function regenerate() {
       extent = extendExtent(extent, bounds);
     }
 
-    vectorSource.addFeatures(allFeatures);
-    statusElement.textContent = `Rendered ${allFeatures.length.toLocaleString()} features across ${requestedCities} city area(s).`;
+    const layerCount = vectorLayers.length || 1;
+    const baseCount = Math.floor(allFeatures.length / layerCount);
+    const remainder = allFeatures.length % layerCount;
+    let offset = 0;
+    for (let i = 0; i < layerCount; ++i) {
+      const count = baseCount + (i < remainder ? 1 : 0);
+      const slice = allFeatures.slice(offset, offset + count);
+      vectorLayers[i].getSource().addFeatures(slice);
+      offset += count;
+    }
+
+    statusElement.textContent = `Rendered ${allFeatures.length.toLocaleString()} features across ${requestedCities} city area(s) split into ${layerCount} layer(s).`;
 
     if (extent) {
       map.getView().fit(extent, {
@@ -573,6 +640,13 @@ cityCountInput.addEventListener('input', () => {
   reportPendingSelection();
 });
 
+if (layerCountInput) {
+  layerCountInput.addEventListener('input', () => {
+    updateLayerCountLabel();
+    reportPendingSelection();
+  });
+}
+
 if (extendRangeInput) {
   extendRangeInput.addEventListener('change', () => {
     applySliderLimit();
@@ -587,4 +661,6 @@ if (applyButton) {
 
 applySliderLimit();
 updateCityCountLabel();
+updateLayerCountLabel();
+updateLayerCollection(DEFAULT_LAYER_COUNT);
 regenerate();

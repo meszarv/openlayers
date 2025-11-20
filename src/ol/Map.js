@@ -35,6 +35,7 @@ import Layer from './layer/Layer.js';
 import PointerEventType from './pointer/EventType.js';
 import {fromUserCoordinate, toUserCoordinate} from './proj.js';
 import RenderEventType from './render/EventType.js';
+import FrameBudget from './render/FrameBudget.js';
 import CompositeMapRenderer from './renderer/Composite.js';
 import {hasArea} from './size.js';
 import {
@@ -69,6 +70,7 @@ import {getUid} from './util.js';
  * @property {!Object<string, Object<string, boolean>>} wantedTiles WantedTiles.
  * @property {string} mapId The id of the map.
  * @property {Object<string, boolean>} renderTargets Identifiers of previously rendered elements.
+ * @property {import("./render/FrameBudget.js").default} frameBudget Shared frame budget for the current render.
  */
 
 /**
@@ -330,6 +332,12 @@ class Map extends BaseObject {
      * @type {number}
      */
     this.frameIndex_ = 0;
+
+    /**
+     * @private
+     * @type {FrameBudget}
+     */
+    this.frameBudget_ = new FrameBudget();
 
     /**
      * @private
@@ -1540,6 +1548,7 @@ class Map extends BaseObject {
    * @private
    */
   renderFrame_(time) {
+    this.frameBudget_.reset();
     const size = this.getSize();
     const view = this.getView();
     const previousFrameState = this.frameState_;
@@ -1575,6 +1584,7 @@ class Map extends BaseObject {
         wantedTiles: {},
         mapId: getUid(this),
         renderTargets: {},
+        frameBudget: this.frameBudget_,
       };
       if (viewState.nextCenter && viewState.nextResolution) {
         const rotation = isNaN(viewState.nextRotation)
