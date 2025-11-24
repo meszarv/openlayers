@@ -71,6 +71,17 @@ import {getUid} from './util.js';
  * @property {string} mapId The id of the map.
  * @property {Object<string, boolean>} renderTargets Identifiers of previously rendered elements.
  * @property {import("./render/FrameBudget.js").default} frameBudget Shared frame budget for the current render.
+ * @property {WeakMap<CanvasRenderingContext2D, number>} sharedCanvasStates Tracks which shared canvases have been cleared this frame.
+ * @property {Array<{
+ *   renderer: import("./renderer/canvas/VectorLayer.js").default,
+ *   layers: Array<import("./layer/Layer.js").State>,
+ *   manager: import("./renderer/canvas/SharedVectorCanvas.js").default
+ * }>|null} sharedLayerGroups Vector layer states that share a render surface.
+ * @property {Map<string, {
+ *   renderer: import("./renderer/canvas/VectorLayer.js").default,
+ *   layers: Array<import("./layer/Layer.js").State>,
+ *   manager: import("./renderer/canvas/SharedVectorCanvas.js").default
+ * }>|null} sharedLayerGroupLookup Lookup by layer uid for shared render groups.
  */
 
 /**
@@ -1585,6 +1596,9 @@ class Map extends BaseObject {
         mapId: getUid(this),
         renderTargets: {},
         frameBudget: this.frameBudget_,
+        sharedCanvasStates: new WeakMap(),
+        sharedLayerGroups: null,
+        sharedLayerGroupLookup: null,
       };
       if (viewState.nextCenter && viewState.nextResolution) {
         const rotation = isNaN(viewState.nextRotation)

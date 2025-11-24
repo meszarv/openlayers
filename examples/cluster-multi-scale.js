@@ -22,8 +22,8 @@ const renderStatsElement = document.getElementById('render-stats');
 
 const DEFAULT_MAX_CITIES = 50;
 const EXTENDED_MAX_CITIES = 200;
-const DEFAULT_LAYER_COUNT = 1;
-const MAX_LAYER_COUNT = 100;
+const DEFAULT_LAYER_COUNT = 100;
+const MAX_LAYER_COUNT = 300;
 
 const FEATURES_PER_CITY = 10000;
 const CITY_SIZE = 200000;
@@ -114,7 +114,7 @@ const vectorLayers = [];
 let layerClassCounter = 0;
 
 function nextLayerClassName() {
-  layerClassCounter += 1;
+  // layerClassCounter += 1;
   return `ol-layer cluster-layer-${layerClassCounter}`;
 }
 

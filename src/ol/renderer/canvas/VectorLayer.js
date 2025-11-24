@@ -47,11 +47,24 @@ import {
   renderFeature,
 } from '../vector.js';
 import CanvasLayerRenderer, {canvasPool} from './Layer.js';
+import SharedVectorCanvas, {createEventContextEntry} from './SharedVectorCanvas.js';
 
 const now =
   typeof performance !== 'undefined' && performance.now
     ? () => performance.now()
     : () => Date.now();
+
+function sharedDebugEnabled() {
+  return typeof window !== 'undefined' && !!window && !!window.__OL_SHARED_DEBUG;
+}
+
+function sharedDebugLog(message, details) {
+  if (!sharedDebugEnabled()) {
+    return;
+  }
+  /* eslint-disable-next-line no-console */
+  console.debug(message, details);
+}
 
 const FRAME_TIME_BUDGET_MS = DEFAULT_FRAME_TIME_BUDGET_MS;
 const BUILD_TIME_BUDGET_MS = DEFAULT_BUILD_TIME_BUDGET_MS;
@@ -350,6 +363,17 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
 
     /**
      * @private
+     * @type {{
+     *   drawContext: CanvasRenderingContext2D,
+     *   hostCanvas: HTMLCanvasElement,
+     *   proxy: CanvasRenderingContext2D,
+     *   canvasProxy: HTMLCanvasElement
+     * }|null}
+     */
+    this.localEventContextEntry_ = null;
+
+    /**
+     * @private
      * @type {number}
      */
     this.lastRenderedCount_ = 0;
@@ -402,6 +426,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
      *   key: string,
      *   completed: boolean,
      *   needsClear: boolean,
+     *   clearedTime: number|undefined,
      *   chunkStates: Map<string, {
      *     instructionIndex: number,
      *     chunkSize: number,
@@ -428,6 +453,306 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
      * @type {number}
      */
     this.buildOverlayCircumference_ = 0;
+
+    /**
+     * @private
+     * @type {SharedVectorCanvas|null}
+     */
+    this.sharedCanvasManager_ = null;
+
+    /**
+     * @private
+     * @type {number|null}
+     */
+    this.sharedDrawBudgetMs_ = null;
+
+    /**
+     * @private
+     * @type {number|null}
+     */
+    this.sharedBuildBudgetMs_ = null;
+
+  }
+
+  /**
+   * @return {SharedVectorCanvas} Shared canvas manager.
+   */
+  getSharedCanvasManager() {
+    if (!this.sharedCanvasManager_) {
+      this.sharedCanvasManager_ = new SharedVectorCanvas(this);
+    }
+    return this.sharedCanvasManager_;
+  }
+
+  /**
+   * @param {import("../../Map.js").FrameState} frameState Frame state.
+   * @return {({
+   *   renderer: CanvasVectorLayerRenderer,
+   *   layers: Array<import("../../layer/Layer.js").State>,
+   *   manager: SharedVectorCanvas
+   * })|null}
+   * @private
+   */
+  getSharedGroup_(frameState) {
+    const lookup = frameState.sharedLayerGroupLookup;
+    if (!lookup) {
+      return null;
+    }
+    const uid = getUid(this.getLayer());
+    return lookup.get(uid) ?? null;
+  }
+
+  /**
+   * Attach this renderer to a shared canvas manager for the current frame.
+   * @param {SharedVectorCanvas} manager Shared manager.
+   * @param {boolean} isHost Whether this renderer owns the physical canvas.
+   * @param {import("../../Map.js").FrameState} frameState Frame state.
+   * @param {HTMLElement|null} target Host target element (host only).
+   * @return {function():void} Detach callback.
+   * @private
+   */
+  attachSharedCanvas_(manager, isHost, frameState, target) {
+    if (isHost) {
+      manager.beginFrame(frameState, target);
+    } else {
+      manager.ensureHostReady(frameState);
+    }
+    manager.attachLayer(this);
+    return true;
+  }
+
+  /**
+   * Determine if the shared draw context needs to be cleared for this frame.
+   * @param {import("../../Map.js").FrameState} frameState Frame state.
+   * @param {CanvasRenderingContext2D} context Canvas context.
+   * @param {string} drawKey Identifier for declutter/non-declutter draws.
+   * @return {boolean} Whether a clear is required.
+   * @private
+   */
+  shouldClearSharedContext_(frameState, context, drawKey) {
+    if (drawKey === 'declutter') {
+      sharedDebugLog('Shared canvas declutter skip clear', {
+        layer: getUid(this.getLayer()),
+        drawKey,
+        frameTime: frameState.time,
+      });
+      return false;
+    }
+    const sharedStates = frameState.sharedCanvasStates;
+    if (!sharedStates) {
+      sharedDebugLog('Shared canvas no state (clear required)', {
+        layer: getUid(this.getLayer()),
+        drawKey,
+        frameTime: frameState.time,
+      });
+      return true;
+    }
+    const clearedTime = sharedStates.get(context);
+    const needsClear = clearedTime !== frameState.time;
+    sharedDebugLog('Shared canvas clear decision', {
+      layer: getUid(this.getLayer()),
+      drawKey,
+      clearedTime,
+      frameTime: frameState.time,
+      needsClear,
+    });
+    return needsClear;
+  }
+
+  /**
+   * Mark the shared draw context as cleared for this frame.
+   * @param {import("../../Map.js").FrameState} frameState Frame state.
+   * @param {CanvasRenderingContext2D} context Canvas context.
+   * @private
+   */
+  markSharedContextCleared_(frameState, context) {
+    if (!frameState.sharedCanvasStates) {
+      frameState.sharedCanvasStates = new WeakMap();
+    }
+    frameState.sharedCanvasStates.set(context, frameState.time);
+    sharedDebugLog('Shared canvas marked cleared', {
+      layer: getUid(this.getLayer()),
+      time: frameState.time,
+    });
+  }
+
+  /**
+   * Return the context that should be passed to render events for this frame.
+   * When drawing on a shared surface the returned proxy exposes the host
+   * canvas DOM references but forwards drawing operations to the offscreen
+   * context that actually records instructions.
+   * @param {CanvasRenderingContext2D} drawContext Active drawing context.
+   * @param {CanvasRenderingContext2D} hostContext Host canvas context.
+   * @param {SharedVectorCanvas|null} sharedManager Shared canvas manager.
+   * @return {CanvasRenderingContext2D}
+   * @private
+   */
+  getRenderEventContext_(drawContext, hostContext, sharedManager) {
+    if (!drawContext) {
+      return drawContext;
+    }
+    if (sharedManager) {
+      return sharedManager.getEventContext(this, drawContext, hostContext);
+    }
+    if (!hostContext || hostContext === drawContext) {
+      this.localEventContextEntry_ = null;
+      return drawContext;
+    }
+    const hostCanvas = hostContext.canvas;
+    if (!hostCanvas) {
+      this.localEventContextEntry_ = null;
+      return drawContext;
+    }
+    let entry = this.localEventContextEntry_;
+    if (
+      !entry ||
+      entry.drawContext !== drawContext ||
+      entry.hostCanvas !== hostCanvas
+    ) {
+      entry = createEventContextEntry(drawContext, hostCanvas);
+      this.localEventContextEntry_ = entry;
+    }
+    if (!entry) {
+      return drawContext;
+    }
+    return entry.proxy;
+  }
+
+  /**
+   * Return cached hit-detection context data for the current frame.
+   * @return {{
+   *   size: import('../../size.js').Size,
+   *   transforms: Array<import('../../transform.js').Transform>,
+   *   extent: import('../../extent.js').Extent,
+   *   resolution: number,
+   *   rotation: number,
+   *   hitProjection: import('../../proj/Projection.js').default|null,
+   *   squaredTolerance: number
+   * }|null}
+   */
+  getSharedHitDetectionConfig() {
+    if (
+      !this.frameState ||
+      !this.renderedCenter_ ||
+      !this.renderedProjection_ ||
+      !this.wrappedRenderedExtent_
+    ) {
+      return null;
+    }
+    const size = this.frameState.size.slice();
+    const transforms = this.computeHitDetectionTransforms_(
+      size,
+      this.renderedCenter_,
+      this.renderedResolution_,
+      this.renderedRotation_,
+      this.renderedProjection_,
+      this.wrappedRenderedExtent_,
+    );
+    if (!transforms.length) {
+      return null;
+    }
+    const resolution = this.renderedResolution_;
+    const squaredTolerance = getSquaredRenderTolerance(
+      resolution,
+      this.renderedPixelRatio_,
+    );
+    const userProjection = getUserProjection();
+    return {
+      size,
+      transforms,
+      extent: this.wrappedRenderedExtent_.slice(),
+      resolution,
+      rotation: this.renderedRotation_,
+      hitProjection: userProjection ? this.renderedProjection_ : null,
+      squaredTolerance,
+    };
+  }
+
+  /**
+   * @param {import('../../size.js').Size} size Viewport size.
+   * @param {import('../../coordinate.js').Coordinate} center Render center.
+   * @param {number} resolution Render resolution.
+   * @param {number} rotation Render rotation.
+   * @param {import('../../proj/Projection.js').default} projection Projection.
+   * @param {import('../../extent.js').Extent} extent Wrapped extent.
+   * @return {Array<import('../../transform.js').Transform>}
+   * @private
+   */
+  computeHitDetectionTransforms_(
+    size,
+    center,
+    resolution,
+    rotation,
+    projection,
+    extent,
+  ) {
+    if (!center || !projection || !extent) {
+      return [];
+    }
+    const transforms = [];
+    const width = size[0] * HIT_DETECT_RESOLUTION;
+    const height = size[1] * HIT_DETECT_RESOLUTION;
+    transforms.push(
+      this.getRenderTransform(
+        center,
+        resolution,
+        rotation,
+        HIT_DETECT_RESOLUTION,
+        width,
+        height,
+        0,
+      ).slice(),
+    );
+    const layer = this.getLayer();
+    const source = layer.getSource();
+    const projectionExtent = projection.getExtent();
+    if (
+      source &&
+      source.getWrapX &&
+      source.getWrapX() &&
+      projection.canWrapX() &&
+      !containsExtent(projectionExtent, extent)
+    ) {
+      let startX = extent[0];
+      const worldWidth = getWidth(projectionExtent);
+      let world = 0;
+      let offsetX;
+      while (startX < projectionExtent[0]) {
+        --world;
+        offsetX = worldWidth * world;
+        transforms.push(
+          this.getRenderTransform(
+            center,
+            resolution,
+            rotation,
+            HIT_DETECT_RESOLUTION,
+            width,
+            height,
+            offsetX,
+          ).slice(),
+        );
+        startX += worldWidth;
+      }
+      world = 0;
+      startX = extent[2];
+      while (startX > projectionExtent[2]) {
+        ++world;
+        offsetX = worldWidth * world;
+        transforms.push(
+          this.getRenderTransform(
+            center,
+            resolution,
+            rotation,
+            HIT_DETECT_RESOLUTION,
+            width,
+            height,
+            offsetX,
+          ).slice(),
+        );
+        startX -= worldWidth;
+      }
+    }
+    return transforms;
   }
 
   /**
@@ -435,9 +760,18 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
    * @param {import("../../Map.js").FrameState} frameState Frame state.
    * @param {boolean} [declutterable] `true` to only render declutterable items,
    *     `false` to only render non-declutterable items, `undefined` to render all.
+   * @param {boolean} [usingSharedSurface] Whether the draw targets a shared canvas.
    */
-  renderWorlds(executorGroup, frameState, declutterable) {
+  renderWorlds(
+    executorGroup,
+    frameState,
+    declutterable,
+    usingSharedSurface = false,
+  ) {
     const timings = this.frameTimings_;
+    const sharedBudgetLimit =
+      this.sharedDrawBudgetMs_ !== null ? this.sharedDrawBudgetMs_ : null;
+    this.sharedDrawBudgetMs_ = null;
     const frameBudget = frameState.frameBudget ?? null;
     const measureTime = !!(timings || frameBudget);
     const drawStart = now();
@@ -448,6 +782,9 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       remainingBudget = Math.max(0, DRAW_TIME_BUDGET_MS - timings.draw);
     } else {
       remainingBudget = DRAW_TIME_BUDGET_MS;
+    }
+    if (sharedBudgetLimit !== null) {
+      remainingBudget = Math.min(remainingBudget, sharedBudgetLimit);
     }
 
     const skipThisFrame = remainingBudget <= 0;
@@ -467,6 +804,13 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       viewHints[ViewHint.ANIMATING] || viewHints[ViewHint.INTERACTING]
     );
     const context = this.context;
+    const sharedContextStates =
+      usingSharedSurface && frameState.sharedCanvasStates
+        ? frameState.sharedCanvasStates
+        : null;
+    let contextClearedTime = sharedContextStates
+      ? sharedContextStates.get(context)
+      : undefined;
     const canvasSize = [context.canvas.width, context.canvas.height];
     const width = Math.round((getWidth(extent) / resolution) * pixelRatio);
     const height = Math.round((getHeight(extent) / resolution) * pixelRatio);
@@ -498,6 +842,20 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
           : 'nodeclutter';
     let drawState = this.drawStates_.get(drawKey);
 
+    const syncSharedClearMarker = () => {
+      if (!drawState) {
+        return;
+      }
+      if (usingSharedSurface && sharedContextStates) {
+        const cleared = sharedContextStates.get(drawState.context);
+        if (cleared !== undefined) {
+          drawState.clearedTime = cleared;
+        }
+      } else if (!usingSharedSurface) {
+        drawState.clearedTime = undefined;
+      }
+    };
+
     const activeBuildState = this.buildState_;
     const isInteractingFrame =
       frameState.viewHints[ViewHint.ANIMATING] ||
@@ -519,6 +877,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       if (drawState) {
         executorGroup.renderedContext_ = drawState.context;
       }
+      syncSharedClearMarker();
       return;
     }
     if (
@@ -557,6 +916,13 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       ) ||
         drawState.declutterTree === declutterTreeRef);
 
+    const sharedClearMismatch =
+      usingSharedSurface &&
+      !!sharedContextStates &&
+      contextClearedTime !== undefined &&
+      drawState &&
+      drawState.clearedTime !== contextClearedTime;
+
     const needsReset =
       !drawState ||
       drawState.executorGroup !== executorGroup ||
@@ -573,7 +939,8 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       drawState.endWorld !== endWorld ||
       drawState.declutterable !== declutterable ||
       drawState.builderTypes !== builderTypes ||
-      !declutterTreeMatches;
+      !declutterTreeMatches ||
+      sharedClearMismatch;
 
     if (needsReset) {
       let resetReasons;
@@ -616,6 +983,9 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         }
         if (!declutterTreeMatches) {
           resetReasons.push('declutterTree');
+        }
+        if (sharedClearMismatch) {
+          resetReasons.push('sharedClear');
         }
       }
       chunkDebugLog('VectorLayer drawState reset', {
@@ -662,7 +1032,15 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         key: drawKey,
         completed: false,
         needsClear: drawKey !== 'declutter',
+        clearedTime: usingSharedSurface ? contextClearedTime : undefined,
       };
+      if (drawState.needsClear) {
+        sharedDebugLog('Shared canvas marked for initial clear', {
+          layer: getUid(this.getLayer()),
+          drawKey,
+          frameTime: frameState.time,
+        });
+      }
       this.drawStates_.set(drawKey, drawState);
     } else if (drawState) {
       if (!drawState.chunkStates) {
@@ -675,6 +1053,11 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         drawKey !== 'declutter'
       ) {
         drawState.needsClear = true;
+        sharedDebugLog('Shared canvas marked for clear due to size change', {
+          layer: getUid(this.getLayer()),
+          drawKey,
+          frameTime: frameState.time,
+        });
         chunkDebugLog('VectorLayer drawState marked for clear', {
           layer: getUid(this.getLayer()),
           drawKey,
@@ -692,6 +1075,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         );
       }
       executorGroup.renderedContext_ = drawState.context;
+      syncSharedClearMarker();
       return;
     }
 
@@ -706,6 +1090,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       if (drawState) {
         executorGroup.renderedContext_ = drawState.context;
       }
+      syncSharedClearMarker();
       return;
     }
 
@@ -723,6 +1108,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       if (drawState) {
         executorGroup.renderedContext_ = drawState.context;
       }
+      syncSharedClearMarker();
       return;
     }
 
@@ -731,15 +1117,26 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
 
     while (drawState.world < drawState.endWorld) {
       if (drawState.needsClear) {
-        const [canvasWidth, canvasHeight] = drawState.scaledCanvasSize;
-        chunkDebugLog('VectorLayer clearing draw context', {
-          layer: getUid(this.getLayer()),
+        const shouldClear = this.shouldClearSharedContext_(
+          frameState,
+          drawState.context,
           drawKey,
-          frameTime: frameState.time,
-          canvasWidth,
-          canvasHeight,
-        });
-        drawState.context.clearRect(0, 0, canvasWidth, canvasHeight);
+        );
+        if (shouldClear) {
+          const [canvasWidth, canvasHeight] = drawState.scaledCanvasSize;
+          chunkDebugLog('VectorLayer clearing draw context', {
+            layer: getUid(this.getLayer()),
+            drawKey,
+            frameTime: frameState.time,
+            canvasWidth,
+            canvasHeight,
+          });
+          drawState.context.clearRect(0, 0, canvasWidth, canvasHeight);
+          this.markSharedContextCleared_(frameState, drawState.context);
+          if (sharedContextStates) {
+            contextClearedTime = sharedContextStates.get(drawState.context);
+          }
+        }
         drawState.needsClear = false;
       }
       if (drawState.transformWorld !== drawState.world || !drawState.transform) {
@@ -987,6 +1384,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
               Math.max(0, currentTime - drawStart),
             );
             executorGroup.renderedContext_ = drawState.context;
+            syncSharedClearMarker();
             return;
           }
 
@@ -1012,6 +1410,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       const drawDuration = Math.max(0, now() - drawStart);
       this.recordDrawDuration_(frameState, drawDuration);
     }
+    syncSharedClearMarker();
   }
 
   /**
@@ -1047,6 +1446,28 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
   }
 
   /**
+   * @param {?number} budgetMs Maximum draw time to advance in this invocation.
+   */
+  setSharedDrawBudget(budgetMs) {
+    if (budgetMs === null || budgetMs === undefined || !isFinite(budgetMs)) {
+      this.sharedDrawBudgetMs_ = null;
+      return;
+    }
+    this.sharedDrawBudgetMs_ = Math.max(0, budgetMs);
+  }
+
+  /**
+   * @param {?number} budgetMs Maximum build time for this invocation.
+   */
+  setSharedBuildBudget(budgetMs) {
+    if (budgetMs === null || budgetMs === undefined || !isFinite(budgetMs)) {
+      this.sharedBuildBudgetMs_ = null;
+      return;
+    }
+    this.sharedBuildBudgetMs_ = Math.max(0, budgetMs);
+  }
+
+  /**
    * @private
    */
   setDrawContext_(force = false) {
@@ -1057,6 +1478,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         this.context.canvas.height,
         canvasPool,
       );
+      this.localEventContextEntry_ = null;
       this.drawContextDirty_ = false;
       if (
         this.lastCompositeCanvas_ &&
@@ -1117,6 +1539,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     this.context = this.targetContext_;
     this.targetContext_ = null;
     this.drawContextDirty_ = false;
+    this.localEventContextEntry_ = null;
   }
 
   /**
@@ -1292,6 +1715,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         replayGroup,
         frameState,
         this.getLayer().getDeclutter() ? false : undefined,
+        false,
       );
     } finally {
       frameState.extent = previousExtent;
@@ -1587,10 +2011,14 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       return;
     }
     this.frameTimings_.total = now() - this.frameTimings_.totalStart;
-    const map = frameState.layerTimings;
-    if (!map) {
-      return;
+    if (
+      !frameState.layerTimings ||
+      frameState.layerTimingsTimestamp !== frameState.time
+    ) {
+      frameState.layerTimings = new Map();
+      frameState.layerTimingsTimestamp = frameState.time;
     }
+    const map = frameState.layerTimings;
     const layerUid = getUid(this.getLayer());
     map.set(layerUid, {
       build: this.frameTimings_.build,
@@ -1615,6 +2043,29 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
   }
 
   /**
+   * @return {boolean} Whether the primary draw state is complete.
+   * @private
+   */
+  isPrimaryDrawComplete_() {
+    const drawState = this.drawStates_.get('all');
+    return !drawState || !!drawState.completed;
+  }
+
+  /**
+   * @param {import("../../Map.js").FrameState} frameState Frame state.
+   * @param {function():HTMLElement|null} callback Draw callback.
+   * @return {boolean} Whether the draw was enqueued for shared execution.
+   * @private
+   */
+  enqueueSharedDraw_(frameState, callback, manager) {
+    if (!manager) {
+      return false;
+    }
+    manager.enqueue(this, callback, frameState);
+    return true;
+  }
+
+  /**
    * Render declutter items for this layer
    * @param {import("../../Map.js").FrameState} frameState Frame state.
    */
@@ -1627,12 +2078,12 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       const previousDrawStates = this.drawStates_;
       this.context = this.panCache_.context;
       this.drawStates_ = this.panCache_.drawStates;
-      this.renderWorlds(this.replayGroup_, frameState, true);
+      this.renderWorlds(this.replayGroup_, frameState, true, false);
       this.panCache_.drawStates = this.drawStates_;
       this.drawStates_ = previousDrawStates;
       this.context = previousContext;
     } else {
-      this.renderWorlds(this.replayGroup_, frameState, true);
+      this.renderWorlds(this.replayGroup_, frameState, true, false);
     }
   }
 
@@ -1675,8 +2126,24 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     this.opacity_ = layerState.opacity;
     const viewState = frameState.viewState;
 
-    this.prepareContainer(frameState, target);
-    const context = this.context;
+    const sharedGroup = this.getSharedGroup_(frameState);
+    const sharedManager = sharedGroup ? sharedGroup.manager : null;
+    const sharedHost = sharedGroup ? sharedGroup.renderer : null;
+    const participatesInShared = !!sharedManager;
+    const isSharedHost = participatesInShared && sharedHost === this;
+
+    let sharedAttached = false;
+    if (participatesInShared) {
+      sharedAttached = this.attachSharedCanvas_(
+        sharedManager,
+        isSharedHost,
+        frameState,
+        isSharedHost ? target : null,
+      );
+    } else {
+      this.prepareContainer(frameState, target);
+    }
+    const hostContext = this.context;
 
     const replayGroup = this.replayGroup_;
     let render = replayGroup && !replayGroup.isEmpty();
@@ -1684,112 +2151,152 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       const hasRenderListeners =
         this.getLayer().hasListener(RenderEventType.PRERENDER) ||
         this.getLayer().hasListener(RenderEventType.POSTRENDER);
-      if (!hasRenderListeners) {
+      if (!hasRenderListeners && !participatesInShared) {
         return null;
       }
     }
 
-    this.setDrawContext_(true);
+    this.setDrawContext_();
     const frameContext = this.context;
 
-    this.preRender(context, frameState);
+    const eventContext = this.getRenderEventContext_(
+      frameContext,
+      hostContext,
+      participatesInShared ? sharedManager : null,
+    );
 
-    const projection = viewState.projection;
-    const viewHints = frameState.viewHints;
-    const animating = viewHints[ViewHint.ANIMATING];
-    const interacting = viewHints[ViewHint.INTERACTING];
-    const interactionActive = animating || interacting;
+    this.preRender(eventContext, frameState);
 
-    if (!replayGroup) {
-      this.invalidatePanCache_();
-    } else if (this.replayGroupChanged) {
-      this.invalidatePanCache_();
-    }
-    this.replayGroupChanged = false;
+    const executeDraw = () => {
+      const projection = viewState.projection;
+      const viewHints = frameState.viewHints;
+      const animating = viewHints[ViewHint.ANIMATING];
+      const interacting = viewHints[ViewHint.INTERACTING];
+      const interactionActive = animating || interacting;
 
-    let panCacheReusable = this.canReusePanCache_(frameState);
-    let panCacheRenderedThisFrame = false;
-    if (render) {
-      const shouldRefreshCache =
-        !panCacheReusable || (!interactionActive && this.needsPanCacheRecentering_(frameState));
-      if (shouldRefreshCache) {
-        this.renderPanCache_(frameState);
-        panCacheRenderedThisFrame = true;
-        panCacheReusable = this.canReusePanCache_(frameState);
+      if (!replayGroup) {
+        this.invalidatePanCache_();
+      } else if (this.replayGroupChanged) {
+        this.invalidatePanCache_();
       }
-    }
+      this.replayGroupChanged = false;
 
-    if (!render) {
-      this.invalidatePanCache_();
-    }
-
-    // clipped rendering if layer extent is set
-    this.clipped_ = false;
-    if (render && layerState.extent && this.clipping) {
-      const layerExtent = fromUserExtent(layerState.extent, projection);
-      render = intersectsExtent(layerExtent, frameState.extent);
-      this.clipped_ = render && !containsExtent(layerExtent, frameState.extent);
-      if (this.clipped_) {
-        this.clipUnrotated(context, frameState, layerExtent);
-      }
-    }
-
-    if (render) {
-      let drawn = false;
-      const cache = this.panCache_;
-      if (panCacheReusable) {
-        drawn = this.blitPanCacheToFrameContext_(frameState, frameContext);
-      }
-      const cacheNeedsProgress = !!(cache && !cache.completed);
-      if (cache && (!drawn || !panCacheReusable || cacheNeedsProgress)) {
-        let cacheComplete = cache && cache.completed;
-        if (!panCacheRenderedThisFrame || !drawn || !panCacheReusable) {
-          cacheComplete = this.renderPanCache_(frameState);
+      let panCacheReusable = this.canReusePanCache_(frameState);
+      let panCacheRenderedThisFrame = false;
+      if (render) {
+        const shouldRefreshCache =
+          !panCacheReusable || (!interactionActive && this.needsPanCacheRecentering_(frameState));
+        if (shouldRefreshCache) {
+          this.renderPanCache_(frameState);
           panCacheRenderedThisFrame = true;
           panCacheReusable = this.canReusePanCache_(frameState);
-          if (panCacheReusable) {
-            const refreshed = this.blitPanCacheToFrameContext_(frameState, frameContext);
-            drawn = drawn || refreshed;
+        }
+      }
+
+      if (!render) {
+        this.invalidatePanCache_();
+      }
+
+      // clipped rendering if layer extent is set
+      this.clipped_ = false;
+      if (render && layerState.extent && this.clipping) {
+        const layerExtent = fromUserExtent(layerState.extent, projection);
+        render = intersectsExtent(layerExtent, frameState.extent);
+        this.clipped_ = render && !containsExtent(layerExtent, frameState.extent);
+        if (this.clipped_) {
+          this.clipUnrotated(frameContext, frameState, layerExtent);
+        }
+      }
+
+      if (render) {
+        let drawn = false;
+        const cache = this.panCache_;
+        if (panCacheReusable) {
+          drawn = this.blitPanCacheToFrameContext_(frameState, frameContext);
+        }
+        const cacheNeedsProgress = !!(cache && !cache.completed);
+        if (cache && (!drawn || !panCacheReusable || cacheNeedsProgress)) {
+          let cacheComplete = cache && cache.completed;
+          if (!panCacheRenderedThisFrame || !drawn || !panCacheReusable) {
+            cacheComplete = this.renderPanCache_(frameState);
+            panCacheRenderedThisFrame = true;
+            panCacheReusable = this.canReusePanCache_(frameState);
+            if (panCacheReusable) {
+              const refreshed = this.blitPanCacheToFrameContext_(frameState, frameContext);
+              drawn = drawn || refreshed;
+            }
+          }
+          const updatedCache = this.panCache_;
+          const stillIncomplete = !!(updatedCache && !updatedCache.completed);
+          if (!cacheComplete || cacheNeedsProgress || stillIncomplete) {
+            frameState.animate = true;
           }
         }
-        const updatedCache = this.panCache_;
-        const stillIncomplete = !!(updatedCache && !updatedCache.completed);
-        if (!cacheComplete || cacheNeedsProgress || stillIncomplete) {
-          frameState.animate = true;
+        if (!drawn) {
+          const cache = this.panCache_;
+          if (!cache || cache.completed) {
+            this.invalidatePanCache_();
+          }
+          const previousContext = this.context;
+          this.context = frameContext;
+          this.renderWorlds(
+            replayGroup,
+            frameState,
+            this.getLayer().getDeclutter() ? false : undefined,
+            participatesInShared,
+          );
+          this.context = previousContext;
+          this.drawContextDirty_ = true;
         }
       }
-      if (!drawn) {
-        const cache = this.panCache_;
-        if (!cache || cache.completed) {
-          this.invalidatePanCache_();
+
+      if (!frameState.declutter && this.clipped_) {
+        frameContext.restore();
+      }
+
+      this.postRender(eventContext, frameState);
+      this.updateBuildOverlay_();
+
+      if (this.renderedRotation_ !== viewState.rotation) {
+        this.renderedRotation_ = viewState.rotation;
+        this.hitDetectionImageData_ = null;
+      }
+      if (!frameState.declutter) {
+        this.resetDrawContext_();
+      }
+      return this.isPrimaryDrawComplete_();
+    };
+
+    const outputElement =
+      participatesInShared && sharedManager
+        ? sharedManager.getContainer() || this.container
+        : this.container;
+
+    if (participatesInShared) {
+      if (this.enqueueSharedDraw_(frameState, executeDraw, sharedManager)) {
+        if (chunkDebugEnabled()) {
+          chunkDebugLog('VectorLayer shared draw enqueued', {
+            layer: getUid(this.getLayer()),
+            className: this.getLayer().getClassName(),
+          });
         }
-        const previousContext = this.context;
-        this.context = frameContext;
-        this.renderWorlds(
-          replayGroup,
-          frameState,
-          this.getLayer().getDeclutter() ? false : undefined,
-        );
-        this.context = previousContext;
-        this.drawContextDirty_ = true;
+        return outputElement;
       }
     }
 
-    if (!frameState.declutter && this.clipped_) {
-      context.restore();
+    const completed = executeDraw();
+    if (chunkDebugEnabled()) {
+      chunkDebugLog('VectorLayer shared draw immediate', {
+        layer: getUid(this.getLayer()),
+        className: this.getLayer().getClassName(),
+        completed,
+      });
     }
-
-    this.postRender(context, frameState);
-    this.updateBuildOverlay_();
-
-    if (this.renderedRotation_ !== viewState.rotation) {
-      this.renderedRotation_ = viewState.rotation;
-      this.hitDetectionImageData_ = null;
+    if (participatesInShared && sharedAttached && sharedManager) {
+      sharedManager.detachLayer(this);
+      sharedAttached = false;
     }
-    if (!frameState.declutter) {
-      this.resetDrawContext_();
-    }
-    return this.container;
+    return outputElement;
   }
 
   /**
@@ -1800,91 +2307,48 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
    * @override
    */
   getFeatures(pixel) {
+    const fallback = () => this.runLocalHitDetection_(pixel);
+    if (!this.frameState) {
+      return fallback();
+    }
+    const sharedGroup = this.getSharedGroup_(this.frameState);
+    const sharedManager = sharedGroup ? sharedGroup.manager : null;
+    if (
+      sharedManager &&
+      sharedManager.supportsHitDetection() &&
+      !this.animatingOrInteracting_
+    ) {
+      return sharedManager.getFeaturesForLayer(this, pixel, fallback);
+    }
+    return fallback();
+  }
+
+  /**
+   * @param {import('../../pixel.js').Pixel} pixel Pixel.
+   * @return {Promise<Array<import('../../Feature.js').default>>}
+   * @private
+   */
+  runLocalHitDetection_(pixel) {
     return new Promise((resolve) => {
       if (
         this.frameState &&
         !this.hitDetectionImageData_ &&
         !this.animatingOrInteracting_
       ) {
-        const size = this.frameState.size.slice();
-        const center = this.renderedCenter_;
-        const resolution = this.renderedResolution_;
-        const rotation = this.renderedRotation_;
-        const projection = this.renderedProjection_;
-        const extent = this.wrappedRenderedExtent_;
-        const layer = this.getLayer();
-        const transforms = [];
-        const width = size[0] * HIT_DETECT_RESOLUTION;
-        const height = size[1] * HIT_DETECT_RESOLUTION;
-        transforms.push(
-          this.getRenderTransform(
-            center,
-            resolution,
-            rotation,
-            HIT_DETECT_RESOLUTION,
-            width,
-            height,
-            0,
-          ).slice(),
-        );
-        const source = layer.getSource();
-        const projectionExtent = projection.getExtent();
-        if (
-          source.getWrapX() &&
-          projection.canWrapX() &&
-          !containsExtent(projectionExtent, extent)
-        ) {
-          let startX = extent[0];
-          const worldWidth = getWidth(projectionExtent);
-          let world = 0;
-          let offsetX;
-          while (startX < projectionExtent[0]) {
-            --world;
-            offsetX = worldWidth * world;
-            transforms.push(
-              this.getRenderTransform(
-                center,
-                resolution,
-                rotation,
-                HIT_DETECT_RESOLUTION,
-                width,
-                height,
-                offsetX,
-              ).slice(),
-            );
-            startX += worldWidth;
-          }
-          world = 0;
-          startX = extent[2];
-          while (startX > projectionExtent[2]) {
-            ++world;
-            offsetX = worldWidth * world;
-            transforms.push(
-              this.getRenderTransform(
-                center,
-                resolution,
-                rotation,
-                HIT_DETECT_RESOLUTION,
-                width,
-                height,
-                offsetX,
-              ).slice(),
-            );
-            startX -= worldWidth;
-          }
+        const hitConfig = this.getSharedHitDetectionConfig();
+        if (hitConfig) {
+          this.hitDetectionImageData_ = createHitDetectionImageData(
+            hitConfig.size,
+            hitConfig.transforms,
+            this.renderedFeatures_,
+            this.getLayer().getStyleFunction(),
+            hitConfig.extent,
+            hitConfig.resolution,
+            hitConfig.rotation,
+            hitConfig.squaredTolerance,
+            hitConfig.hitProjection,
+          );
         }
-        const userProjection = getUserProjection();
-        this.hitDetectionImageData_ = createHitDetectionImageData(
-          size,
-          transforms,
-          this.renderedFeatures_,
-          layer.getStyleFunction(),
-          extent,
-          resolution,
-          rotation,
-          getSquaredRenderTolerance(resolution, this.renderedPixelRatio_),
-          userProjection ? projection : null,
-        );
       }
       resolve(
         hitDetect(pixel, this.renderedFeatures_, this.hitDetectionImageData_),
@@ -1996,6 +2460,22 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
   prepareFrame(frameState) {
     const timings = createFrameTimings();
     const frameBudget = frameState?.frameBudget ?? null;
+    this.sharedBuildBudgetMs_ = null;
+    if (frameState) {
+      const sharedGroup = this.getSharedGroup_(frameState);
+      const sharedManager = sharedGroup ? sharedGroup.manager : null;
+      if (sharedManager && frameBudget) {
+        const budget = sharedManager.allocateBuildBudget(this, frameState);
+        if (budget !== null && budget !== undefined) {
+          this.setSharedBuildBudget(budget);
+          sharedDebugLog('Shared build budget assigned', {
+            layer: getUid(this.getLayer()),
+            budget,
+            frameTime: frameState.time,
+          });
+        }
+      }
+    }
     if (this.buildState_) {
       timings.renderedFeatures = this.buildState_.renderedFeatures;
       timings.skippedFeatures = this.buildState_.skippedFeatures;
@@ -2280,8 +2760,20 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     const userTransform = buildState.userTransform;
     const declutter = buildState.declutter;
     const chunkStart = now();
-    const availableBuildBudget =
+    let availableBuildBudget =
       frameBudget?.getRemainingBuildBudget() ?? BUILD_TIME_BUDGET_MS;
+    if (this.sharedBuildBudgetMs_ !== null) {
+      const limited = Math.min(availableBuildBudget, this.sharedBuildBudgetMs_);
+      sharedDebugLog('Shared build budget applied', {
+        layer: getUid(this.getLayer()),
+        requested: availableBuildBudget,
+        sharedLimit: this.sharedBuildBudgetMs_,
+        applied: limited,
+        frameTime: frameState.time,
+      });
+      availableBuildBudget = limited;
+      this.sharedBuildBudgetMs_ = null;
+    }
     if (availableBuildBudget <= 0) {
       frameState.animate = true;
       this.lastRenderedCount_ = buildState.renderedFeatures;
