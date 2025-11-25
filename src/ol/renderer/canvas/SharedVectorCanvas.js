@@ -89,8 +89,8 @@ function sharedDebugLog(message, details) {
 
 /**
  * Manages a physical canvas/context that multiple logical vector layers share.
- * Responsible for hosting the DOM container, maintaining per-layer pan caches
- * and draw states, and scheduling layer draw callbacks.
+ * Responsible for hosting the DOM container, maintaining per-layer draw states,
+ * and scheduling layer draw callbacks.
  */
 class SharedVectorCanvas {
   /**
@@ -125,14 +125,13 @@ class SharedVectorCanvas {
 
     /**
      * @private
-     * @type {Map<string, {panCache: any, drawStates: Map<string, any>}>}
+     * @type {Map<string, {drawStates: Map<string, any>}>}
      */
     this.layerState_ = new Map();
 
     /**
      * @private
      * @type {Map<import('./VectorLayer.js').default, {
-     *   panCache: any,
      *   drawStates: Map<string, any>,
      *   container: HTMLElement|null,
      *   context: CanvasRenderingContext2D|null,
@@ -217,6 +216,7 @@ class SharedVectorCanvas {
      * @type {WeakMap<object, {frameTime: number, features: Set<import('../../Feature.js').FeatureLike>}>}
      */
     this.declutterFeatureCache_ = new WeakMap();
+
   }
 
   /**
@@ -282,7 +282,7 @@ class SharedVectorCanvas {
 
   /**
    * Attach a logical renderer to the shared host context, swapping in stored
-   * pan cache and draw-state references.
+   * draw-state references.
    * @param {import('./VectorLayer.js').default} renderer Renderer.
    */
   attachLayer(renderer) {
@@ -290,19 +290,16 @@ class SharedVectorCanvas {
     let state = this.layerState_.get(layerUid);
     if (!state) {
       state = {
-        panCache: null,
         drawStates: new Map(),
       };
       this.layerState_.set(layerUid, state);
     }
     this.attached_.set(renderer, {
-      panCache: renderer.panCache_,
       drawStates: renderer.drawStates_,
       container: renderer.container,
       context: renderer.context,
       containerReused: renderer.containerReused,
     });
-    renderer.panCache_ = state.panCache;
     renderer.drawStates_ = state.drawStates;
     if (this.context_) {
       renderer.context = this.context_;
@@ -326,12 +323,10 @@ class SharedVectorCanvas {
     const layerUid = getUid(renderer.getLayer());
     const state = this.layerState_.get(layerUid);
     if (state) {
-      state.panCache = renderer.panCache_;
       state.drawStates = renderer.drawStates_;
     }
     const restore = this.attached_.get(renderer);
     if (restore) {
-      renderer.panCache_ = restore.panCache ?? null;
       renderer.drawStates_ = restore.drawStates ?? new Map();
       renderer.container = restore.container ?? renderer.container;
       renderer.context = restore.context ?? renderer.context;

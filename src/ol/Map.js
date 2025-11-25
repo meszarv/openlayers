@@ -71,7 +71,6 @@ import {getUid} from './util.js';
  * @property {string} mapId The id of the map.
  * @property {Object<string, boolean>} renderTargets Identifiers of previously rendered elements.
  * @property {import("./render/FrameBudget.js").default} frameBudget Shared frame budget for the current render.
- * @property {WeakMap<CanvasRenderingContext2D, number>} sharedCanvasStates Tracks which shared canvases have been cleared this frame.
  * @property {Array<{
  *   renderer: import("./renderer/canvas/VectorLayer.js").default,
  *   layers: Array<import("./layer/Layer.js").State>,
@@ -1596,7 +1595,6 @@ class Map extends BaseObject {
         mapId: getUid(this),
         renderTargets: {},
         frameBudget: this.frameBudget_,
-        sharedCanvasStates: new WeakMap(),
         sharedLayerGroups: null,
         sharedLayerGroupLookup: null,
       };

@@ -78,7 +78,6 @@ const CHUNK_INCREASE_THRESHOLD = DRAW_TIME_BUDGET_MS * 0.5;
 const CHUNK_DECREASE_THRESHOLD = DRAW_TIME_BUDGET_MS * 1.1;
 const CHUNK_INCREASE_FACTOR = 1.5;
 const CHUNK_DECREASE_FACTOR = 0.75;
-const INTERACTION_CACHE_MARGIN_PX = 256;
 const BUILD_OVERLAY_STYLE_ID = 'ol-build-progress-style';
 const BUILD_OVERLAY_CLASSNAME = 'ol-build-progress-overlay';
 const BUILD_OVERLAY_PROGRESS_CLASS = 'ol-build-progress-circle';
@@ -284,24 +283,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     this.renderedPixelRatio_ = 1;
 
     /**
-     * Offscreen cache of the last rendered replay output for interaction reuse.
-     * @private
-     * @type {{
-     *   context: CanvasRenderingContext2D,
-     *   extent: import("../../extent.js").Extent,
-     *   resolution: number,
-     *   rotation: number,
-     *   pixelRatio: number,
-     *   margin: number,
-     *   declutter: boolean,
-     *   replayGroupUid: string|null,
-     *   completed: boolean,
-     *   drawStates: Map<string, unknown>;
-     * }|null}
-     */
-    this.panCache_ = null;
-
-    /**
      * @private
      * @type {import("../../render.js").OrderFunction|null}
      */
@@ -426,7 +407,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
      *   key: string,
      *   completed: boolean,
      *   needsClear: boolean,
-     *   clearedTime: number|undefined,
      *   chunkStates: Map<string, {
      *     instructionIndex: number,
      *     chunkSize: number,
@@ -519,61 +499,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     }
     manager.attachLayer(this);
     return true;
-  }
-
-  /**
-   * Determine if the shared draw context needs to be cleared for this frame.
-   * @param {import("../../Map.js").FrameState} frameState Frame state.
-   * @param {CanvasRenderingContext2D} context Canvas context.
-   * @param {string} drawKey Identifier for declutter/non-declutter draws.
-   * @return {boolean} Whether a clear is required.
-   * @private
-   */
-  shouldClearSharedContext_(frameState, context, drawKey) {
-    if (drawKey === 'declutter') {
-      sharedDebugLog('Shared canvas declutter skip clear', {
-        layer: getUid(this.getLayer()),
-        drawKey,
-        frameTime: frameState.time,
-      });
-      return false;
-    }
-    const sharedStates = frameState.sharedCanvasStates;
-    if (!sharedStates) {
-      sharedDebugLog('Shared canvas no state (clear required)', {
-        layer: getUid(this.getLayer()),
-        drawKey,
-        frameTime: frameState.time,
-      });
-      return true;
-    }
-    const clearedTime = sharedStates.get(context);
-    const needsClear = clearedTime !== frameState.time;
-    sharedDebugLog('Shared canvas clear decision', {
-      layer: getUid(this.getLayer()),
-      drawKey,
-      clearedTime,
-      frameTime: frameState.time,
-      needsClear,
-    });
-    return needsClear;
-  }
-
-  /**
-   * Mark the shared draw context as cleared for this frame.
-   * @param {import("../../Map.js").FrameState} frameState Frame state.
-   * @param {CanvasRenderingContext2D} context Canvas context.
-   * @private
-   */
-  markSharedContextCleared_(frameState, context) {
-    if (!frameState.sharedCanvasStates) {
-      frameState.sharedCanvasStates = new WeakMap();
-    }
-    frameState.sharedCanvasStates.set(context, frameState.time);
-    sharedDebugLog('Shared canvas marked cleared', {
-      layer: getUid(this.getLayer()),
-      time: frameState.time,
-    });
   }
 
   /**
@@ -804,13 +729,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       viewHints[ViewHint.ANIMATING] || viewHints[ViewHint.INTERACTING]
     );
     const context = this.context;
-    const sharedContextStates =
-      usingSharedSurface && frameState.sharedCanvasStates
-        ? frameState.sharedCanvasStates
-        : null;
-    let contextClearedTime = sharedContextStates
-      ? sharedContextStates.get(context)
-      : undefined;
     const canvasSize = [context.canvas.width, context.canvas.height];
     const width = Math.round((getWidth(extent) / resolution) * pixelRatio);
     const height = Math.round((getHeight(extent) / resolution) * pixelRatio);
@@ -842,19 +760,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
           : 'nodeclutter';
     let drawState = this.drawStates_.get(drawKey);
 
-    const syncSharedClearMarker = () => {
-      if (!drawState) {
-        return;
-      }
-      if (usingSharedSurface && sharedContextStates) {
-        const cleared = sharedContextStates.get(drawState.context);
-        if (cleared !== undefined) {
-          drawState.clearedTime = cleared;
-        }
-      } else if (!usingSharedSurface) {
-        drawState.clearedTime = undefined;
-      }
-    };
+    const syncSharedClearMarker = () => {};
 
     const activeBuildState = this.buildState_;
     const isInteractingFrame =
@@ -916,12 +822,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       ) ||
         drawState.declutterTree === declutterTreeRef);
 
-    const sharedClearMismatch =
-      usingSharedSurface &&
-      !!sharedContextStates &&
-      contextClearedTime !== undefined &&
-      drawState &&
-      drawState.clearedTime !== contextClearedTime;
+    const sharedClearMismatch = false;
 
     const needsReset =
       !drawState ||
@@ -1032,7 +933,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         key: drawKey,
         completed: false,
         needsClear: drawKey !== 'declutter',
-        clearedTime: usingSharedSurface ? contextClearedTime : undefined,
       };
       if (drawState.needsClear) {
         sharedDebugLog('Shared canvas marked for initial clear', {
@@ -1117,26 +1017,15 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
 
     while (drawState.world < drawState.endWorld) {
       if (drawState.needsClear) {
-        const shouldClear = this.shouldClearSharedContext_(
-          frameState,
-          drawState.context,
+        const [canvasWidth, canvasHeight] = drawState.scaledCanvasSize;
+        chunkDebugLog('VectorLayer clearing draw context', {
+          layer: getUid(this.getLayer()),
           drawKey,
-        );
-        if (shouldClear) {
-          const [canvasWidth, canvasHeight] = drawState.scaledCanvasSize;
-          chunkDebugLog('VectorLayer clearing draw context', {
-            layer: getUid(this.getLayer()),
-            drawKey,
-            frameTime: frameState.time,
-            canvasWidth,
-            canvasHeight,
-          });
-          drawState.context.clearRect(0, 0, canvasWidth, canvasHeight);
-          this.markSharedContextCleared_(frameState, drawState.context);
-          if (sharedContextStates) {
-            contextClearedTime = sharedContextStates.get(drawState.context);
-          }
-        }
+          frameTime: frameState.time,
+          canvasWidth,
+          canvasHeight,
+        });
+        drawState.context.clearRect(0, 0, canvasWidth, canvasHeight);
         drawState.needsClear = false;
       }
       if (drawState.transformWorld !== drawState.world || !drawState.transform) {
@@ -1543,267 +1432,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
   }
 
   /**
-   * Drop any cached interaction raster.
-   * @private
-   */
-  invalidatePanCache_() {
-    if (this.panCache_) {
-      const cacheContext = this.panCache_.context;
-      const cacheCanvas = cacheContext.canvas;
-      releaseCanvas(cacheContext);
-      canvasPool.push(cacheCanvas);
-      this.panCache_ = null;
-      this.resetDrawStates_();
-    }
-  }
-
-  /**
-   * Ensure we have an interaction cache sized for the current view plus margin.
-   * @private
-   * @param {import("../../Map.js").FrameState} frameState Frame state.
-   * @return {{cache: NonNullable<this['panCache_']>, extent: import("../../extent.js").Extent}}
-   */
-  ensurePanCache_(frameState) {
-    const viewState = frameState.viewState;
-    const resolution = viewState.resolution;
-    const pixelRatio = frameState.pixelRatio;
-    const margin = INTERACTION_CACHE_MARGIN_PX;
-    const marginWorld = resolution * margin;
-    const extent = buffer(frameState.extent.slice(), marginWorld);
-    const cacheWidthPx = Math.max(
-      1,
-      Math.round((getWidth(extent) / resolution) * pixelRatio),
-    );
-    const cacheHeightPx = Math.max(
-      1,
-      Math.round((getHeight(extent) / resolution) * pixelRatio),
-    );
-
-    let cache = this.panCache_;
-    if (!cache) {
-      const context = createCanvasContext2D(
-        cacheWidthPx,
-        cacheHeightPx,
-        canvasPool,
-      );
-      cache = {
-        context,
-        extent,
-        resolution,
-        rotation: viewState.rotation,
-        pixelRatio,
-        margin,
-        declutter: !!this.getLayer().getDeclutter(),
-        replayGroupUid: this.replayGroup_ ? getUid(this.replayGroup_) : null,
-        completed: false,
-        drawStates: new Map(),
-      };
-      this.panCache_ = cache;
-    } else {
-      const canvas = cache.context.canvas;
-      const sizeChanged = canvas.width !== cacheWidthPx || canvas.height !== cacheHeightPx;
-      if (sizeChanged) {
-        canvas.width = cacheWidthPx;
-        canvas.height = cacheHeightPx;
-        this.resetDrawStates_();
-        cache.completed = false;
-        cache.drawStates = new Map();
-      } else {
-        const replayGroupUid = this.replayGroup_ ? getUid(this.replayGroup_) : null;
-        const needsClear =
-          !cache.extent ||
-          !equals(cache.extent, extent) ||
-          Math.abs(cache.resolution - resolution) > 1e-12 ||
-          Math.abs(cache.rotation - viewState.rotation) > 1e-12 ||
-          Math.abs(cache.pixelRatio - pixelRatio) > 1e-6 ||
-          cache.declutter !== !!this.getLayer().getDeclutter() ||
-          cache.replayGroupUid !== replayGroupUid;
-        if (needsClear) {
-          const context = cache.context;
-          context.save();
-          context.setTransform(1, 0, 0, 1, 0, 0);
-          context.clearRect(0, 0, canvas.width, canvas.height);
-          context.restore();
-          cache.completed = false;
-          cache.drawStates = new Map();
-        }
-      }
-    }
-
-    return {cache, extent};
-  }
-
-  /**
-   * Check whether the cached raster fully covers the requested view parameters.
-   * @private
-   * @param {import("../../Map.js").FrameState} frameState Frame state.
-   * @return {boolean}
-   */
-  canReusePanCache_(frameState) {
-    const cache = this.panCache_;
-    if (!cache) {
-      return false;
-    }
-    const viewState = frameState.viewState;
-    if (!cache.extent) {
-      return false;
-    }
-    if (Math.abs(cache.pixelRatio - frameState.pixelRatio) > 1e-6) {
-      return false;
-    }
-    if (Math.abs(cache.resolution - viewState.resolution) > 1e-12) {
-      return false;
-    }
-    if (Math.abs(cache.rotation - viewState.rotation) > 1e-12) {
-      return false;
-    }
-    if (!containsExtent(cache.extent, frameState.extent)) {
-      return false;
-    }
-    const replayGroup = this.replayGroup_;
-    const replayUid = replayGroup ? getUid(replayGroup) : null;
-    if (cache.replayGroupUid !== replayUid) {
-      return false;
-    }
-    return true;
-  }
-
-  /**
-   * Determine if the cached raster should be re-centered around the current view.
-   * @private
-   * @param {import("../../Map.js").FrameState} frameState Frame state.
-   * @return {boolean}
-   */
-  needsPanCacheRecentering_(frameState) {
-    const cache = this.panCache_;
-    if (!cache) {
-      return true;
-    }
-    const resolution = frameState.viewState.resolution;
-    const safeMargin = (cache.margin * resolution) / 2;
-    const safeExtent = buffer(frameState.extent.slice(), safeMargin);
-    return !containsExtent(cache.extent, safeExtent);
-  }
-
-  /**
-   * Render the replay group into the interaction cache, chunking work over frames.
-   * @private
-   * @param {import("../../Map.js").FrameState} frameState Frame state.
-   * @return {boolean} `true` when the cache now contains a complete replay.
-   */
-  renderPanCache_(frameState) {
-    const replayGroup = this.replayGroup_;
-    if (!replayGroup) {
-      this.invalidatePanCache_();
-      return false;
-    }
-    const {cache, extent} = this.ensurePanCache_(frameState);
-    const viewState = frameState.viewState;
-
-    const previousContext = this.context;
-    const previousDirty = this.drawContextDirty_;
-    const previousExtent = frameState.extent;
-    const previousDrawStates = this.drawStates_;
-
-    this.context = cache.context;
-    frameState.extent = extent;
-    this.drawStates_ = cache.drawStates;
-    cache.completed = false;
-
-    try {
-      this.renderWorlds(
-        replayGroup,
-        frameState,
-        this.getLayer().getDeclutter() ? false : undefined,
-        false,
-      );
-    } finally {
-      frameState.extent = previousExtent;
-      this.context = previousContext;
-      this.drawContextDirty_ = previousDirty;
-      cache.drawStates = this.drawStates_;
-      this.drawStates_ = previousDrawStates;
-    }
-
-    cache.extent = extent;
-    cache.resolution = viewState.resolution;
-    cache.rotation = viewState.rotation;
-    cache.pixelRatio = frameState.pixelRatio;
-    cache.margin = INTERACTION_CACHE_MARGIN_PX;
-    cache.declutter = !!this.getLayer().getDeclutter();
-    cache.replayGroupUid = replayGroup ? getUid(replayGroup) : null;
-    const drawState = cache.drawStates.get('all');
-    cache.completed = !!(drawState && drawState.completed);
-    return cache.completed;
-  }
-
-  /**
-   * Copy the cached raster into the current frame context, aligning by view extent.
-   * @private
-   * @param {import("../../Map.js").FrameState} frameState Frame state.
-   * @param {CanvasRenderingContext2D} frameContext Target context.
-   * @return {boolean} `true` if content was drawn.
-   */
-  blitPanCacheToFrameContext_(frameState, frameContext) {
-    const cache = this.panCache_;
-    if (!cache || !cache.extent) {
-      return false;
-    }
-
-    const cacheCanvas = cache.context.canvas;
-    const viewExtent = frameState.extent;
-    const cacheExtent = cache.extent;
-    const resolution = frameState.viewState.resolution;
-    const pixelRatio = frameState.pixelRatio;
-
-    const srcWidth = Math.round((getWidth(viewExtent) / resolution) * pixelRatio);
-    const srcHeight = Math.round((getHeight(viewExtent) / resolution) * pixelRatio);
-    if (srcWidth > cacheCanvas.width || srcHeight > cacheCanvas.height) {
-      return false;
-    }
-    let srcX = Math.round(
-      ((viewExtent[0] - cacheExtent[0]) / resolution) * pixelRatio,
-    );
-    let srcY = Math.round(
-      ((cacheExtent[3] - viewExtent[3]) / resolution) * pixelRatio,
-    );
-
-    if (srcX < 0) {
-      srcX = 0;
-    }
-    if (srcY < 0) {
-      srcY = 0;
-    }
-    if (srcX + srcWidth > cacheCanvas.width) {
-      srcX = cacheCanvas.width - srcWidth;
-    }
-    if (srcY + srcHeight > cacheCanvas.height) {
-      srcY = cacheCanvas.height - srcHeight;
-    }
-
-    const destWidth = frameContext.canvas.width;
-    const destHeight = frameContext.canvas.height;
-
-    frameContext.save();
-    frameContext.setTransform(1, 0, 0, 1, 0, 0);
-    frameContext.clearRect(0, 0, destWidth, destHeight);
-    frameContext.drawImage(
-      cacheCanvas,
-      srcX,
-      srcY,
-      srcWidth,
-      srcHeight,
-      0,
-      0,
-      destWidth,
-      destHeight,
-    );
-    frameContext.restore();
-    this.drawContextDirty_ = true;
-    return true;
-  }
-
-  /**
    * @private
    * @param {HTMLCanvasElement} canvas Source canvas.
    */
@@ -2073,18 +1701,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     if (!this.replayGroup_ || !this.getLayer().getDeclutter()) {
       return;
     }
-    if (this.panCache_ && this.panCache_.completed) {
-      const previousContext = this.context;
-      const previousDrawStates = this.drawStates_;
-      this.context = this.panCache_.context;
-      this.drawStates_ = this.panCache_.drawStates;
-      this.renderWorlds(this.replayGroup_, frameState, true, false);
-      this.panCache_.drawStates = this.drawStates_;
-      this.drawStates_ = previousDrawStates;
-      this.context = previousContext;
-    } else {
-      this.renderWorlds(this.replayGroup_, frameState, true, false);
-    }
+    this.renderWorlds(this.replayGroup_, frameState, true, false);
   }
 
   /**
@@ -2169,33 +1786,8 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
 
     const executeDraw = () => {
       const projection = viewState.projection;
-      const viewHints = frameState.viewHints;
-      const animating = viewHints[ViewHint.ANIMATING];
-      const interacting = viewHints[ViewHint.INTERACTING];
-      const interactionActive = animating || interacting;
 
-      if (!replayGroup) {
-        this.invalidatePanCache_();
-      } else if (this.replayGroupChanged) {
-        this.invalidatePanCache_();
-      }
       this.replayGroupChanged = false;
-
-      let panCacheReusable = this.canReusePanCache_(frameState);
-      let panCacheRenderedThisFrame = false;
-      if (render) {
-        const shouldRefreshCache =
-          !panCacheReusable || (!interactionActive && this.needsPanCacheRecentering_(frameState));
-        if (shouldRefreshCache) {
-          this.renderPanCache_(frameState);
-          panCacheRenderedThisFrame = true;
-          panCacheReusable = this.canReusePanCache_(frameState);
-        }
-      }
-
-      if (!render) {
-        this.invalidatePanCache_();
-      }
 
       // clipped rendering if layer extent is set
       this.clipped_ = false;
@@ -2209,45 +1801,16 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       }
 
       if (render) {
-        let drawn = false;
-        const cache = this.panCache_;
-        if (panCacheReusable) {
-          drawn = this.blitPanCacheToFrameContext_(frameState, frameContext);
-        }
-        const cacheNeedsProgress = !!(cache && !cache.completed);
-        if (cache && (!drawn || !panCacheReusable || cacheNeedsProgress)) {
-          let cacheComplete = cache && cache.completed;
-          if (!panCacheRenderedThisFrame || !drawn || !panCacheReusable) {
-            cacheComplete = this.renderPanCache_(frameState);
-            panCacheRenderedThisFrame = true;
-            panCacheReusable = this.canReusePanCache_(frameState);
-            if (panCacheReusable) {
-              const refreshed = this.blitPanCacheToFrameContext_(frameState, frameContext);
-              drawn = drawn || refreshed;
-            }
-          }
-          const updatedCache = this.panCache_;
-          const stillIncomplete = !!(updatedCache && !updatedCache.completed);
-          if (!cacheComplete || cacheNeedsProgress || stillIncomplete) {
-            frameState.animate = true;
-          }
-        }
-        if (!drawn) {
-          const cache = this.panCache_;
-          if (!cache || cache.completed) {
-            this.invalidatePanCache_();
-          }
-          const previousContext = this.context;
-          this.context = frameContext;
-          this.renderWorlds(
-            replayGroup,
-            frameState,
-            this.getLayer().getDeclutter() ? false : undefined,
-            participatesInShared,
-          );
-          this.context = previousContext;
-          this.drawContextDirty_ = true;
-        }
+        const previousContext = this.context;
+        this.context = frameContext;
+        this.renderWorlds(
+          replayGroup,
+          frameState,
+          this.getLayer().getDeclutter() ? false : undefined,
+          participatesInShared,
+        );
+        this.context = previousContext;
+        this.drawContextDirty_ = true;
       }
 
       if (!frameState.declutter && this.clipped_) {
