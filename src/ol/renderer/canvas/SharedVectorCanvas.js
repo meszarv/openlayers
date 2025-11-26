@@ -902,8 +902,8 @@ class SharedVectorCanvas {
   }
 
   /**
-   * Compute the per-job draw budget for this iteration.
-   * @param {number} remaining Remaining draw budget from the FrameBudget.
+   * Compute the per-job budget for build tasks.
+   * @param {number} remaining Remaining build budget from the FrameBudget.
    * @param {number} jobsRemaining Jobs still queued (including current).
    * @return {number} Milliseconds allotted to the job.
    * @private
@@ -933,22 +933,21 @@ class SharedVectorCanvas {
       this.activeRunIndex_ = i;
       const job = runQueue[i];
       let completed = true;
-      const queueRemaining = runQueue.length - i;
       if (job.frameState && job.frameState.frameBudget) {
         if (currentBudget === null) {
           currentBudget =
             job.frameState.frameBudget.getRemainingDrawBudget();
         }
-        const jobBudget = this.getJobBudget_(currentBudget, queueRemaining);
+        const jobBudget = currentBudget;
         if (job.renderer.setSharedDrawBudget) {
           job.renderer.setSharedDrawBudget(jobBudget);
         }
         sharedDebugLog('assign draw budget', {
           layer: getUid(job.renderer.getLayer()),
           jobBudget,
-          queueRemaining,
           frameTime: job.frameState.time,
           remaining: currentBudget,
+          queueRemaining: runQueue.length - i,
         });
       } else {
         if (job.renderer.setSharedDrawBudget) {
