@@ -34,6 +34,38 @@ Goal: allow many logical `VectorLayer` instances to render on a single physical 
 
 ### Milestone 4: Preserve layer-level semantics
 1. Render events & context wrapping: fire each logical layer’s `prerender`/`postrender` listeners even when the canvas is shared. Provide a context wrapper so user code still receives the expected event payload and DOM references.
+2. Visibility, opacity, zIndex, resolution: re-run per-layer visibility gates (min/max resolution/z
+
+### Milestone 5: Clear-once epoch & reference counting
+Goal: eliminate per-frame `frameState.sharedCanvasStates` tracking and use a persistent, manager-owned epoch/refcount to guarantee the shared canvas is cleared exactly once between full multi-layer renders—no more wipes mid-cycle, no ghosting after resuming.
+
+1. **Introduce manager epoch + refcount**
+   - Add `contextEpoch_` and `pendingDraws_` fields to `SharedVectorCanvas`. Each physical context starts with epoch `0`.
+   - Expose helper APIs: `beginDraw(renderer)` (increments `pendingDraws_` and returns current epoch), `completeDraw(renderer)` (decrements `pendingDraws_`), `getContextEpoch(context)`, and `bumpContextEpoch(context)` (increments epoch and returns the new value).
+   - Replace `frameState.sharedCanvasStates` usage in `CanvasVectorLayerRenderer` with the manager-provided epoch. Each `drawState` stores the epoch it last synced to; it only clears when `drawState.epoch !== managerEpoch`.
+
+2. **Tie clears to epoch transitions**
+   - When a layer requests a clear (first draw in a cycle / size change / extent change), call `manager.bumpContextEpoch()` before any draw instructions run. This invalidates any cached epoch so the next `renderWorlds()` invocation will clear once.
+   - The actual `clearRect()` happens inside `renderWorlds()` when `drawState.epoch !== managerEpoch` and the layer holds the refcount lock. After clearing, set `drawState.epoch = managerEpoch`.
+   - Remove the per-frame `markSharedContextCleared_()` logic—epochs now communicate freshness.
+
+3. **Manage `prepareContainer()` and cycle boundaries via refcount**
+   - When `pendingDraws_` transitions from `0 → 1`, mark the context “dirty” and allow `prepareContainer()` to clear/resize exactly once (host prepares the container, bumps the epoch, and clears the canvas). While `pendingDraws_ > 0`, subsequent `beginFrame()` calls skip clearing.
+   - When `pendingDraws_` drops back to `0`, flag the manager so the next `beginDraw()` kicks off a new cycle (host can now safely clear again).
+   - Ensure `beginFrame()` consults `pendingDraws_` instead of `cycleInProgress_`; the manager only suppresses host clears while there are outstanding draws.
+
+4. **Simplify lock ownership and layer completion**
+   - Replace `lockedBy` per-layer tracking with the refcount: a layer automatically “owns” the context between `beginDraw()` and `completeDraw()`. If it yields mid-frame, the manager keeps `pendingDraws_` elevated so other layers know not to clear yet.
+   - Layer completion simply calls `completeDraw()`; when the counter hits zero, the manager optionally requests a host clear on the next cycle.
+
+5. **Cleanup & diagnostics**
+   - Remove `frameState.sharedCanvasStates` entirely and delete the old `{clearedTime, lockedBy}` plumbing.
+   - Update debug logging to report epoch transitions and refcount values so issues can be triaged easily.
+   - Document the new lifecycle in `SharedVectorCanvas` and in developer docs so future contributors understand when/why clears happen.
+
+6. **Validation**
+   - Build targeted stress tests (manual or automated) with multiple heavy layers sharing a canvas to confirm: (a) no layer’s chunks disappear mid-cycle, (b) the canvas is cleared exactly once per full multi-layer render, and (c) host clears resume correctly when all layers finished.
+1. Render events & context wrapping: fire each logical layer’s `prerender`/`postrender` listeners even when the canvas is shared. Provide a context wrapper so user code still receives the expected event payload and DOM references.
 2. Visibility, opacity, zIndex, resolution: re-run per-layer visibility gates (min/max resolution/zoom, extent clipping, declutter flags) before enqueuing a shared draw. Respect opacity by either wrapping the draw in save/restore on the host context or compositing from a temporary surface when needed.
 3. Layer timings & stats: keep `frameState.layerTimings`, `renderedFeatures`, `skippedFeatures`, and build-progress overlays accurate by recording per-layer start/stop timestamps and counters inside the shared helper.
 4. Fallback safeguards: if a layer uses custom render events or renderer-specific state that requires an isolated canvas, detect it and bypass sharing while logging the reason when `__OL_SHARED_DEBUG` is enabled.

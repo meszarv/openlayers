@@ -407,6 +407,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
      *   key: string,
      *   completed: boolean,
      *   needsClear: boolean,
+     *   sharedEpoch: number,
      *   chunkStates: Map<string, {
      *     instructionIndex: number,
      *     chunkSize: number,
@@ -686,12 +687,14 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
    * @param {boolean} [declutterable] `true` to only render declutterable items,
    *     `false` to only render non-declutterable items, `undefined` to render all.
    * @param {boolean} [usingSharedSurface] Whether the draw targets a shared canvas.
+   * @param {import('./SharedVectorCanvas.js').default|null} [sharedManager] Shared canvas manager.
    */
   renderWorlds(
     executorGroup,
     frameState,
     declutterable,
     usingSharedSurface = false,
+    sharedManager = null,
   ) {
     const timings = this.frameTimings_;
     const sharedBudgetLimit =
@@ -759,7 +762,9 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
           ? 'declutter'
           : 'nodeclutter';
     let drawState = this.drawStates_.get(drawKey);
-
+    if (drawState && typeof drawState.sharedEpoch !== 'number') {
+      drawState.sharedEpoch = NaN;
+    }
     const syncSharedClearMarker = () => {};
 
     const activeBuildState = this.buildState_;
@@ -933,6 +938,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         key: drawKey,
         completed: false,
         needsClear: drawKey !== 'declutter',
+        sharedEpoch: NaN,
       };
       if (drawState.needsClear) {
         sharedDebugLog('Shared canvas marked for initial clear', {
@@ -1016,7 +1022,33 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     const maxBuilderTypes = ALL.length;
 
     while (drawState.world < drawState.endWorld) {
-      if (drawState.needsClear) {
+      if (sharedManager) {
+        const managerEpoch = sharedManager.getContextEpoch();
+        if (drawState.sharedEpoch !== managerEpoch) {
+          const shouldClear = sharedManager.claimEpochClear();
+          if (shouldClear) {
+            const [canvasWidth, canvasHeight] = drawState.scaledCanvasSize;
+            chunkDebugLog('VectorLayer shared clear', {
+              layer: getUid(this.getLayer()),
+              drawKey,
+              frameTime: frameState.time,
+              canvasWidth,
+              canvasHeight,
+              epoch: managerEpoch,
+            });
+            drawState.context.clearRect(0, 0, canvasWidth, canvasHeight);
+          } else {
+            chunkDebugLog('VectorLayer shared clear skipped (already cleared)', {
+              layer: getUid(this.getLayer()),
+              drawKey,
+              frameTime: frameState.time,
+              epoch: managerEpoch,
+            });
+          }
+          drawState.sharedEpoch = managerEpoch;
+          drawState.needsClear = false;
+        }
+      } else if (drawState.needsClear) {
         const [canvasWidth, canvasHeight] = drawState.scaledCanvasSize;
         chunkDebugLog('VectorLayer clearing draw context', {
           layer: getUid(this.getLayer()),
@@ -1701,7 +1733,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     if (!this.replayGroup_ || !this.getLayer().getDeclutter()) {
       return;
     }
-    this.renderWorlds(this.replayGroup_, frameState, true, false);
+    this.renderWorlds(this.replayGroup_, frameState, true, false, null);
   }
 
   /**
@@ -1785,49 +1817,65 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     this.preRender(eventContext, frameState);
 
     const executeDraw = () => {
-      const projection = viewState.projection;
+      let sharedDrawStarted = false;
+      if (participatesInShared && sharedManager) {
+        sharedManager.beginDraw(this);
+        sharedDrawStarted = true;
+      }
+      let completed = false;
+      let threw = true;
+      try {
+        const projection = viewState.projection;
 
-      this.replayGroupChanged = false;
+        this.replayGroupChanged = false;
 
-      // clipped rendering if layer extent is set
-      this.clipped_ = false;
-      if (render && layerState.extent && this.clipping) {
-        const layerExtent = fromUserExtent(layerState.extent, projection);
-        render = intersectsExtent(layerExtent, frameState.extent);
-        this.clipped_ = render && !containsExtent(layerExtent, frameState.extent);
-        if (this.clipped_) {
-          this.clipUnrotated(frameContext, frameState, layerExtent);
+        // clipped rendering if layer extent is set
+        this.clipped_ = false;
+        if (render && layerState.extent && this.clipping) {
+          const layerExtent = fromUserExtent(layerState.extent, projection);
+          render = intersectsExtent(layerExtent, frameState.extent);
+          this.clipped_ = render && !containsExtent(layerExtent, frameState.extent);
+          if (this.clipped_) {
+            this.clipUnrotated(frameContext, frameState, layerExtent);
+          }
+        }
+
+        if (render) {
+          const previousContext = this.context;
+          this.context = frameContext;
+          this.renderWorlds(
+            replayGroup,
+            frameState,
+            this.getLayer().getDeclutter() ? false : undefined,
+            participatesInShared,
+            participatesInShared ? sharedManager : null,
+          );
+          this.context = previousContext;
+          this.drawContextDirty_ = true;
+        }
+
+        if (!frameState.declutter && this.clipped_) {
+          frameContext.restore();
+        }
+
+        this.postRender(eventContext, frameState);
+        this.updateBuildOverlay_();
+
+        if (this.renderedRotation_ !== viewState.rotation) {
+          this.renderedRotation_ = viewState.rotation;
+          this.hitDetectionImageData_ = null;
+        }
+        if (!frameState.declutter) {
+          this.resetDrawContext_();
+        }
+        completed = this.isPrimaryDrawComplete_();
+        threw = false;
+        return completed;
+      } finally {
+        if (sharedDrawStarted && (threw || completed) && sharedManager) {
+          sharedManager.completeDraw(this);
         }
       }
-
-      if (render) {
-        const previousContext = this.context;
-        this.context = frameContext;
-        this.renderWorlds(
-          replayGroup,
-          frameState,
-          this.getLayer().getDeclutter() ? false : undefined,
-          participatesInShared,
-        );
-        this.context = previousContext;
-        this.drawContextDirty_ = true;
-      }
-
-      if (!frameState.declutter && this.clipped_) {
-        frameContext.restore();
-      }
-
-      this.postRender(eventContext, frameState);
-      this.updateBuildOverlay_();
-
-      if (this.renderedRotation_ !== viewState.rotation) {
-        this.renderedRotation_ = viewState.rotation;
-        this.hitDetectionImageData_ = null;
-      }
-      if (!frameState.declutter) {
-        this.resetDrawContext_();
-      }
-      return this.isPrimaryDrawComplete_();
     };
 
     const outputElement =

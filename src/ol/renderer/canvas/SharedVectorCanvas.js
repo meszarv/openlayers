@@ -202,6 +202,68 @@ class SharedVectorCanvas {
     /**
      * @private
      * @type {{
+     *   centerX: number,
+     *   centerY: number,
+     *   resolution: number,
+     *   rotation: number,
+     *   pixelRatio: number,
+     *   extentWidth: number,
+     *   extentHeight: number,
+     *   sizeX: number,
+     *   sizeY: number
+     * }|null}
+     */
+    this.viewSignature_ = null;
+
+    /**
+     * @private
+     * @type {number}
+     */
+    this.contextEpoch_ = 0;
+
+    /**
+     * @private
+     * @type {number}
+     */
+    this.clearedEpoch_ = 0;
+
+    /**
+     * @private
+     * @type {number}
+     */
+    this.pendingDraws_ = 0;
+
+    /**
+     * @private
+     * @type {Map<import('./VectorLayer.js').default, {epoch:number}>}
+     */
+    this.activeDraws_ = new Map();
+
+    /**
+     * @private
+     * @type {number}
+     */
+    this.epochCancelId_ = 0;
+
+    /**
+     * @private
+     * @type {Array<{
+     *   renderer: import('./VectorLayer.js').default,
+     *   callback: function():boolean,
+     *   frameState: import('../../Map.js').FrameState
+     * }>|null}
+     */
+    this.activeRunQueue_ = null;
+
+    /**
+     * @private
+     * @type {number}
+     */
+    this.activeRunIndex_ = -1;
+
+    /**
+     * @private
+     * @type {{
      *   frameTime: number,
      *   features: Array<import('../../Feature.js').FeatureLike>,
      *   imageData: ImageData,
@@ -240,8 +302,10 @@ class SharedVectorCanvas {
     this.participants_ = layers ? layers.slice() : null;
     this.hitDetectionCache_ = null;
     this.declutterFeatureCache_ = new WeakMap();
-    this.context_ = null;
-    this.container_ = null;
+    if (this.pendingDraws_ === 0) {
+      this.context_ = null;
+      this.container_ = null;
+    }
     sharedDebugLog('reset', {
       frameTime: this.frameId_,
       participants: this.buildParticipants_,
@@ -257,9 +321,46 @@ class SharedVectorCanvas {
     if (!this.hostRenderer_) {
       return;
     }
-    this.hostRenderer_.prepareContainer(frameState, target);
-    this.context_ = this.hostRenderer_.context;
-    this.container_ = this.hostRenderer_.container;
+    const signature = this.computeViewSignature_(frameState);
+    let viewChanged = false;
+    if (signature) {
+      viewChanged =
+        !this.viewSignature_ ||
+        !this.viewSignaturesEqual_(signature, this.viewSignature_);
+      this.viewSignature_ = signature;
+    } else if (this.viewSignature_) {
+      viewChanged = true;
+      this.viewSignature_ = null;
+    }
+    let epochBumped = false;
+    if (viewChanged) {
+      this.bumpContextEpoch('view-change');
+      epochBumped = true;
+    }
+    const shouldPrepare =
+      !this.context_ || this.pendingDraws_ === 0 || viewChanged;
+    if (shouldPrepare) {
+      this.hostRenderer_.prepareContainer(frameState, target);
+      this.context_ = this.hostRenderer_.context;
+      this.container_ = this.hostRenderer_.container;
+      if (!epochBumped && this.pendingDraws_ === 0) {
+        this.bumpContextEpoch('beginFrame');
+        epochBumped = true;
+      }
+      sharedDebugLog('host prepare', {
+        frameTime: frameState.time,
+        pendingDraws: this.pendingDraws_,
+        epoch: this.contextEpoch_,
+        viewChanged,
+      });
+    } else {
+      sharedDebugLog('host prepare skipped', {
+        frameTime: frameState.time,
+        pendingDraws: this.pendingDraws_,
+        epoch: this.contextEpoch_,
+        viewChanged,
+      });
+    }
     this.frameId_ = frameState.time;
   }
 
@@ -271,6 +372,199 @@ class SharedVectorCanvas {
     if (!this.context_ || this.frameId_ !== frameState.time) {
       this.beginFrame(frameState, this.container_);
     }
+  }
+
+  /**
+   * @return {number} Current shared context epoch.
+   */
+  getContextEpoch() {
+    return this.contextEpoch_;
+  }
+
+  /**
+   * Increment the shared context epoch, signalling that a fresh clear is needed.
+   * @param {string} [reason] Optional debug reason.
+   * @return {number} Updated epoch value.
+   */
+  bumpContextEpoch(reason) {
+    this.contextEpoch_ += 1;
+    this.clearedEpoch_ = 0;
+    this.epochCancelId_ += 1;
+    this.cancelPendingJobs_('epoch-bump');
+    sharedDebugLog('epoch bumped', {
+      epoch: this.contextEpoch_,
+      reason,
+    });
+    return this.contextEpoch_;
+  }
+
+  /**
+   * Register a renderer as actively drawing on the shared context.
+   * @param {import('./VectorLayer.js').default} renderer Renderer.
+   */
+  beginDraw(renderer) {
+    if (this.activeDraws_.has(renderer)) {
+      return;
+    }
+    this.pendingDraws_ += 1;
+    this.activeDraws_.set(renderer, {epoch: this.contextEpoch_});
+    sharedDebugLog('begin draw', {
+      layer: getUid(renderer.getLayer()),
+      epoch: this.contextEpoch_,
+      pendingDraws: this.pendingDraws_,
+    });
+  }
+
+  /**
+   * Mark a renderer's shared draw as complete.
+   * @param {import('./VectorLayer.js').default} renderer Renderer.
+   */
+  completeDraw(renderer) {
+    if (!this.activeDraws_.has(renderer)) {
+      return;
+    }
+    this.activeDraws_.delete(renderer);
+    this.pendingDraws_ = Math.max(0, this.pendingDraws_ - 1);
+    sharedDebugLog('complete draw', {
+      layer: getUid(renderer.getLayer()),
+      epoch: this.contextEpoch_,
+      pendingDraws: this.pendingDraws_,
+    });
+  }
+
+  /**
+   * Claim the right to clear for the current epoch.
+   * @return {boolean} `true` if the caller should perform the clear.
+   */
+  claimEpochClear() {
+    if (this.clearedEpoch_ === this.contextEpoch_) {
+      return false;
+    }
+    this.clearedEpoch_ = this.contextEpoch_;
+    return true;
+  }
+
+  /**
+   * Cancel any pending draw callbacks belonging to the previous epoch.
+   * @param {string} reason Reason for cancellation.
+   * @private
+   */
+  cancelPendingJobs_(reason) {
+    let cancelled = 0;
+    const cancelJob = (job) => {
+      if (!job) {
+        return;
+      }
+      cancelled += 1;
+      if (job.frameState) {
+        job.frameState.animate = true;
+      }
+      this.detachLayer(job.renderer);
+    };
+    while (this.pending_.length) {
+      cancelJob(this.pending_.pop());
+    }
+    while (this.jobs_.length) {
+      cancelJob(this.jobs_.pop());
+    }
+    if (this.activeRunQueue_) {
+      for (let i = this.activeRunIndex_ + 1; i < this.activeRunQueue_.length; ++i) {
+        cancelJob(this.activeRunQueue_[i]);
+      }
+      this.activeRunQueue_.length = Math.max(0, this.activeRunIndex_ + 1);
+    }
+    if (cancelled) {
+      sharedDebugLog('cancelled pending draws', {
+        epoch: this.contextEpoch_,
+        reason,
+        cancelled,
+      });
+    }
+    if (this.activeDraws_.size) {
+      const active = Array.from(this.activeDraws_.keys());
+      for (let i = 0; i < active.length; ++i) {
+        this.completeDraw(active[i]);
+      }
+    }
+  }
+
+  /**
+   * @param {import('../../Map.js').FrameState} frameState Frame state.
+   * @return {{
+   *   centerX: number,
+   *   centerY: number,
+   *   resolution: number,
+   *   rotation: number,
+   *   pixelRatio: number,
+   *   extentWidth: number,
+   *   extentHeight: number,
+   *   sizeX: number,
+   *   sizeY: number
+   * }|null}
+   * @private
+   */
+  computeViewSignature_(frameState) {
+    if (!frameState || !frameState.viewState) {
+      return null;
+    }
+    const viewState = frameState.viewState;
+    const center = viewState.center || [NaN, NaN];
+    const extent = frameState.extent || [NaN, NaN, NaN, NaN];
+    const size = frameState.size || [NaN, NaN];
+    return {
+      centerX: center[0],
+      centerY: center[1],
+      resolution: viewState.resolution,
+      rotation: viewState.rotation,
+      pixelRatio: frameState.pixelRatio,
+      extentWidth: extent[2] - extent[0],
+      extentHeight: extent[3] - extent[1],
+      sizeX: size[0],
+      sizeY: size[1],
+    };
+  }
+
+  /**
+   * @param {{
+   *   centerX: number,
+   *   centerY: number,
+   *   resolution: number,
+   *   rotation: number,
+   *   pixelRatio: number,
+   *   extentWidth: number,
+   *   extentHeight: number,
+   *   sizeX: number,
+   *   sizeY: number
+   * }|null} a First signature.
+   * @param {{
+   *   centerX: number,
+   *   centerY: number,
+   *   resolution: number,
+   *   rotation: number,
+   *   pixelRatio: number,
+   *   extentWidth: number,
+   *   extentHeight: number,
+   *   sizeX: number,
+   *   sizeY: number
+   * }|null} b Second signature.
+   * @return {boolean} Whether the signatures match.
+   * @private
+   */
+  viewSignaturesEqual_(a, b) {
+    if (!a || !b) {
+      return a === b;
+    }
+    return (
+      a.centerX === b.centerX &&
+      a.centerY === b.centerY &&
+      a.resolution === b.resolution &&
+      a.rotation === b.rotation &&
+      a.pixelRatio === b.pixelRatio &&
+      a.extentWidth === b.extentWidth &&
+      a.extentHeight === b.extentHeight &&
+      a.sizeX === b.sizeX &&
+      a.sizeY === b.sizeY
+    );
   }
 
   /**
@@ -631,8 +925,12 @@ class SharedVectorCanvas {
     const runQueue = [...this.pending_, ...this.jobs_];
     this.jobs_.length = 0;
     this.pending_.length = 0;
+    this.activeRunQueue_ = runQueue;
+    this.activeRunIndex_ = -1;
+    const runCancelId = this.epochCancelId_;
     let currentBudget = null;
     for (let i = 0; i < runQueue.length; ++i) {
+      this.activeRunIndex_ = i;
       const job = runQueue[i];
       let completed = true;
       const queueRemaining = runQueue.length - i;
@@ -679,7 +977,15 @@ class SharedVectorCanvas {
         currentBudget =
           job.frameState.frameBudget.getRemainingDrawBudget();
       }
+      if (runCancelId !== this.epochCancelId_) {
+        sharedDebugLog('draw aborted due to epoch bump', {
+          epoch: this.contextEpoch_,
+        });
+        break;
+      }
     }
+    this.activeRunQueue_ = null;
+    this.activeRunIndex_ = -1;
   }
 }
 
