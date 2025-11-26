@@ -70,23 +70,6 @@ export function createEventContextEntry(drawContext, hostCanvas) {
   return entry;
 }
 
-function sharedDebugEnabled() {
-  if (typeof window !== 'undefined' && window.__OL_SHARED_DEBUG) {
-    return true;
-  }
-  if (typeof globalThis !== 'undefined' && globalThis.__OL_SHARED_DEBUG) {
-    return true;
-  }
-  return false;
-}
-
-function sharedDebugLog(message, details) {
-  if (!sharedDebugEnabled()) {
-    return;
-  }
-  console.debug(`SharedVectorCanvas: ${message}`, details || undefined);
-}
-
 /**
  * Manages a physical canvas/context that multiple logical vector layers share.
  * Responsible for hosting the DOM container, maintaining per-layer draw states,
@@ -306,10 +289,6 @@ class SharedVectorCanvas {
       this.context_ = null;
       this.container_ = null;
     }
-    sharedDebugLog('reset', {
-      frameTime: this.frameId_,
-      participants: this.buildParticipants_,
-    });
   }
 
   /**
@@ -347,19 +326,6 @@ class SharedVectorCanvas {
         this.bumpContextEpoch('beginFrame');
         epochBumped = true;
       }
-      sharedDebugLog('host prepare', {
-        frameTime: frameState.time,
-        pendingDraws: this.pendingDraws_,
-        epoch: this.contextEpoch_,
-        viewChanged,
-      });
-    } else {
-      sharedDebugLog('host prepare skipped', {
-        frameTime: frameState.time,
-        pendingDraws: this.pendingDraws_,
-        epoch: this.contextEpoch_,
-        viewChanged,
-      });
     }
     this.frameId_ = frameState.time;
   }
@@ -391,10 +357,6 @@ class SharedVectorCanvas {
     this.clearedEpoch_ = 0;
     this.epochCancelId_ += 1;
     this.cancelPendingJobs_('epoch-bump');
-    sharedDebugLog('epoch bumped', {
-      epoch: this.contextEpoch_,
-      reason,
-    });
     return this.contextEpoch_;
   }
 
@@ -408,11 +370,6 @@ class SharedVectorCanvas {
     }
     this.pendingDraws_ += 1;
     this.activeDraws_.set(renderer, {epoch: this.contextEpoch_});
-    sharedDebugLog('begin draw', {
-      layer: getUid(renderer.getLayer()),
-      epoch: this.contextEpoch_,
-      pendingDraws: this.pendingDraws_,
-    });
   }
 
   /**
@@ -425,11 +382,6 @@ class SharedVectorCanvas {
     }
     this.activeDraws_.delete(renderer);
     this.pendingDraws_ = Math.max(0, this.pendingDraws_ - 1);
-    sharedDebugLog('complete draw', {
-      layer: getUid(renderer.getLayer()),
-      epoch: this.contextEpoch_,
-      pendingDraws: this.pendingDraws_,
-    });
   }
 
   /**
@@ -450,12 +402,10 @@ class SharedVectorCanvas {
    * @private
    */
   cancelPendingJobs_(reason) {
-    let cancelled = 0;
     const cancelJob = (job) => {
       if (!job) {
         return;
       }
-      cancelled += 1;
       if (job.frameState) {
         job.frameState.animate = true;
       }
@@ -472,13 +422,6 @@ class SharedVectorCanvas {
         cancelJob(this.activeRunQueue_[i]);
       }
       this.activeRunQueue_.length = Math.max(0, this.activeRunIndex_ + 1);
-    }
-    if (cancelled) {
-      sharedDebugLog('cancelled pending draws', {
-        epoch: this.contextEpoch_,
-        reason,
-        cancelled,
-      });
     }
     if (this.activeDraws_.size) {
       const active = Array.from(this.activeDraws_.keys());
@@ -686,16 +629,10 @@ class SharedVectorCanvas {
    */
   getFeaturesForLayer(renderer, pixel, fallback) {
     if (!this.supportsHitDetection() || renderer.animatingOrInteracting_) {
-      sharedDebugLog('shared hit detection fallback (unsupported)', {
-        layer: getUid(renderer.getLayer()),
-      });
       return fallback ? fallback() : Promise.resolve([]);
     }
     const cache = this.ensureHitDetectionCache_(renderer);
     if (!cache) {
-      sharedDebugLog('shared hit detection fallback (no cache)', {
-        layer: getUid(renderer.getLayer()),
-      });
       return fallback ? fallback() : Promise.resolve([]);
     }
     const layerUid = getUid(renderer.getLayer());
@@ -710,11 +647,6 @@ class SharedVectorCanvas {
         return undefined;
       },
     );
-    sharedDebugLog('shared hit detection completed', {
-      layer: layerUid,
-      hits: hits.length,
-      totalFeatures: cache.features.length,
-    });
     return Promise.resolve(hits);
   }
 
@@ -891,13 +823,6 @@ class SharedVectorCanvas {
       frameState.frameBudget.getRemainingBuildBudget();
     const budget = this.getJobBudget_(remaining, pending);
     this.processedBuilders_.add(layerUid);
-    sharedDebugLog('allocate build budget', {
-      layer: layerUid,
-      frameTime: frameState.time,
-      remaining,
-      pending,
-      budget,
-    });
     return budget;
   }
 
@@ -942,13 +867,6 @@ class SharedVectorCanvas {
         if (job.renderer.setSharedDrawBudget) {
           job.renderer.setSharedDrawBudget(jobBudget);
         }
-        sharedDebugLog('assign draw budget', {
-          layer: getUid(job.renderer.getLayer()),
-          jobBudget,
-          frameTime: job.frameState.time,
-          remaining: currentBudget,
-          queueRemaining: runQueue.length - i,
-        });
       } else {
         if (job.renderer.setSharedDrawBudget) {
           job.renderer.setSharedDrawBudget(null);
@@ -967,19 +885,12 @@ class SharedVectorCanvas {
         if (job.frameState) {
           job.frameState.animate = true;
         }
-        sharedDebugLog('job deferred', {
-          layer: getUid(job.renderer.getLayer()),
-          frameTime: job.frameState?.time,
-        });
       }
       if (job.frameState && job.frameState.frameBudget) {
         currentBudget =
           job.frameState.frameBudget.getRemainingDrawBudget();
       }
       if (runCancelId !== this.epochCancelId_) {
-        sharedDebugLog('draw aborted due to epoch bump', {
-          epoch: this.contextEpoch_,
-        });
         break;
       }
     }

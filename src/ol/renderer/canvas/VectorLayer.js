@@ -25,7 +25,6 @@ import RenderEventType from '../../render/EventType.js';
 import {
   DEFAULT_BUILD_TIME_BUDGET_MS,
   DEFAULT_DRAW_TIME_BUDGET_MS,
-  DEFAULT_FRAME_TIME_BUDGET_MS,
 } from '../../render/FrameBudget.js';
 import CanvasBuilderGroup from '../../render/canvas/BuilderGroup.js';
 import ExecutorGroup, {
@@ -54,19 +53,6 @@ const now =
     ? () => performance.now()
     : () => Date.now();
 
-function sharedDebugEnabled() {
-  return typeof window !== 'undefined' && !!window && !!window.__OL_SHARED_DEBUG;
-}
-
-function sharedDebugLog(message, details) {
-  if (!sharedDebugEnabled()) {
-    return;
-  }
-  /* eslint-disable-next-line no-console */
-  console.debug(message, details);
-}
-
-const FRAME_TIME_BUDGET_MS = DEFAULT_FRAME_TIME_BUDGET_MS;
 const BUILD_TIME_BUDGET_MS = DEFAULT_BUILD_TIME_BUDGET_MS;
 const DRAW_TIME_BUDGET_MS = DEFAULT_DRAW_TIME_BUDGET_MS;
 const CHUNKED_BUILDER_TYPES = new Set(['Image']);
@@ -129,24 +115,6 @@ function ensureBuildOverlayStyle() {
     }
   `;
   document.head.appendChild(style);
-}
-
-function chunkDebugEnabled() {
-  return typeof window !== 'undefined' && !!window && !!window.__OL_CHUNK_DEBUG;
-}
-
-function chunkDebugLog(message, details) {
-  if (!chunkDebugEnabled()) {
-    return;
-  }
-  let summary;
-  try {
-    summary = JSON.stringify(details);
-  } catch (err) {
-    summary = String(err);
-  }
-  /* eslint-disable-next-line no-console */
-  console.log(`${message} ${summary}`);
 }
 
 function createFrameTimings() {
@@ -765,7 +733,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     if (drawState && typeof drawState.sharedEpoch !== 'number') {
       drawState.sharedEpoch = NaN;
     }
-    const syncSharedClearMarker = () => {};
 
     const activeBuildState = this.buildState_;
     const isInteractingFrame =
@@ -788,25 +755,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       if (drawState) {
         executorGroup.renderedContext_ = drawState.context;
       }
-      syncSharedClearMarker();
       return;
-    }
-    if (
-      drawState &&
-      (drawState.center[0] !== center[0] || drawState.center[1] !== center[1])
-    ) {
-      const dx = center[0] - drawState.center[0];
-      const dy = center[1] - drawState.center[1];
-      const pixelDelta = Math.sqrt(dx * dx + dy * dy) / resolution;
-      chunkDebugLog('VectorLayer center delta', {
-        layer: getUid(this.getLayer()),
-        drawKey,
-        dx,
-        dy,
-        pixelDelta,
-        resolution,
-        frameTime: frameState.time,
-      });
     }
     if (
       declutterable &&
@@ -827,8 +776,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       ) ||
         drawState.declutterTree === declutterTreeRef);
 
-    const sharedClearMismatch = false;
-
     const needsReset =
       !drawState ||
       drawState.executorGroup !== executorGroup ||
@@ -845,8 +792,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       drawState.endWorld !== endWorld ||
       drawState.declutterable !== declutterable ||
       drawState.builderTypes !== builderTypes ||
-      !declutterTreeMatches ||
-      sharedClearMismatch;
+      !declutterTreeMatches;
 
     if (needsReset) {
       let resetReasons;
@@ -890,22 +836,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         if (!declutterTreeMatches) {
           resetReasons.push('declutterTree');
         }
-        if (sharedClearMismatch) {
-          resetReasons.push('sharedClear');
-        }
       }
-      chunkDebugLog('VectorLayer drawState reset', {
-        layer: getUid(this.getLayer()),
-        drawKey,
-        remainingBudget,
-        timingsDraw: timings ? timings.draw : undefined,
-        reasons: resetReasons,
-        reasonsString:
-          resetReasons && resetReasons.length > 0
-            ? resetReasons.join(',')
-            : undefined,
-        frameTime: frameState.time,
-      });
       const zIndices = Object.keys(executorGroup.executorsByZIndex_ || {})
         .map(Number)
         .sort(declutterTreeRef ? descending : ascending);
@@ -940,13 +871,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         needsClear: drawKey !== 'declutter',
         sharedEpoch: NaN,
       };
-      if (drawState.needsClear) {
-        sharedDebugLog('Shared canvas marked for initial clear', {
-          layer: getUid(this.getLayer()),
-          drawKey,
-          frameTime: frameState.time,
-        });
-      }
       this.drawStates_.set(drawKey, drawState);
     } else if (drawState) {
       if (!drawState.chunkStates) {
@@ -959,16 +883,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         drawKey !== 'declutter'
       ) {
         drawState.needsClear = true;
-        sharedDebugLog('Shared canvas marked for clear due to size change', {
-          layer: getUid(this.getLayer()),
-          drawKey,
-          frameTime: frameState.time,
-        });
-        chunkDebugLog('VectorLayer drawState marked for clear', {
-          layer: getUid(this.getLayer()),
-          drawKey,
-          frameTime: frameState.time,
-        });
       }
       drawState.declutterTree = declutterTreeRef ?? undefined;
     }
@@ -981,7 +895,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         );
       }
       executorGroup.renderedContext_ = drawState.context;
-      syncSharedClearMarker();
       return;
     }
 
@@ -996,7 +909,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       if (drawState) {
         executorGroup.renderedContext_ = drawState.context;
       }
-      syncSharedClearMarker();
       return;
     }
 
@@ -1014,7 +926,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       if (drawState) {
         executorGroup.renderedContext_ = drawState.context;
       }
-      syncSharedClearMarker();
       return;
     }
 
@@ -1028,35 +939,13 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
           const shouldClear = sharedManager.claimEpochClear();
           if (shouldClear) {
             const [canvasWidth, canvasHeight] = drawState.scaledCanvasSize;
-            chunkDebugLog('VectorLayer shared clear', {
-              layer: getUid(this.getLayer()),
-              drawKey,
-              frameTime: frameState.time,
-              canvasWidth,
-              canvasHeight,
-              epoch: managerEpoch,
-            });
             drawState.context.clearRect(0, 0, canvasWidth, canvasHeight);
-          } else {
-            chunkDebugLog('VectorLayer shared clear skipped (already cleared)', {
-              layer: getUid(this.getLayer()),
-              drawKey,
-              frameTime: frameState.time,
-              epoch: managerEpoch,
-            });
           }
           drawState.sharedEpoch = managerEpoch;
           drawState.needsClear = false;
         }
       } else if (drawState.needsClear) {
         const [canvasWidth, canvasHeight] = drawState.scaledCanvasSize;
-        chunkDebugLog('VectorLayer clearing draw context', {
-          layer: getUid(this.getLayer()),
-          drawKey,
-          frameTime: frameState.time,
-          canvasWidth,
-          canvasHeight,
-        });
         drawState.context.clearRect(0, 0, canvasWidth, canvasHeight);
         drawState.needsClear = false;
       }
@@ -1145,27 +1034,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
               drawState.declutterTree,
             );
             const execDuration = timings ? now() - execStart : 0;
-            if (timings && execDuration > remainingBudget) {
-              chunkDebugLog('VectorLayer replay over budget', {
-                layer: getUid(this.getLayer()),
-                drawKey,
-                builderType,
-                zIndex,
-                execDuration,
-                budget: remainingBudget,
-                frameTime: frameState.time,
-              });
-            }
-            if (!this.drawContextDirty_) {
-              chunkDebugLog('VectorLayer draw context marked dirty', {
-                layer: getUid(this.getLayer()),
-                reason: 'draw',
-                drawKey,
-                builderType,
-                zIndex,
-                frameTime: frameState.time,
-              });
-            }
             this.drawContextDirty_ = true;
             if (requireClip) {
               drawContext.restore();
@@ -1222,30 +1090,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
             chunkEnd,
           );
           const execDuration = timings ? now() - execStart : 0;
-          if (timings && execDuration > remainingBudget) {
-            chunkDebugLog('VectorLayer replay over budget', {
-              layer: getUid(this.getLayer()),
-              drawKey,
-              builderType,
-              zIndex,
-              chunkStart,
-              chunkEnd,
-              drawInstructions,
-              execDuration,
-              budget: remainingBudget,
-              frameTime: frameState.time,
-            });
-          }
-          if (!this.drawContextDirty_) {
-            chunkDebugLog('VectorLayer draw context marked dirty', {
-              layer: getUid(this.getLayer()),
-              reason: 'draw',
-              drawKey,
-              builderType,
-              zIndex,
-              frameTime: frameState.time,
-            });
-          }
           this.drawContextDirty_ = true;
           if (requireClip) {
             drawContext.restore();
@@ -1285,27 +1129,12 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
 
           const currentTime = now();
           if (timings && currentTime >= budgetDeadline) {
-            chunkDebugLog('VectorLayer draw budget exhausted', {
-              layer: getUid(this.getLayer()),
-              drawKey,
-              world: drawState.world,
-              zIndexPos: drawState.zIndexPos,
-              builderPos: drawState.builderPos,
-              instructionIndex: chunkState.instructionIndex,
-              chunkSize: chunkState.chunkSize,
-              elapsed: currentTime - drawStart,
-              remainingBudget,
-              budgetDeadline,
-              frameTime: frameState.time,
-              animateBefore: !!frameState.animate,
-            });
             frameState.animate = true;
             this.recordDrawDuration_(
               frameState,
               Math.max(0, currentTime - drawStart),
             );
             executorGroup.renderedContext_ = drawState.context;
-            syncSharedClearMarker();
             return;
           }
 
@@ -1331,7 +1160,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       const drawDuration = Math.max(0, now() - drawStart);
       this.recordDrawDuration_(frameState, drawDuration);
     }
-    syncSharedClearMarker();
   }
 
   /**
@@ -1408,12 +1236,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       ) {
         this.context.drawImage(this.lastCompositeCanvas_, 0, 0);
       }
-      chunkDebugLog('VectorLayer offscreen context acquired', {
-        layer: getUid(this.getLayer()),
-        force,
-        opacity: this.opacity_,
-        frameTime: this.frameState?.time,
-      });
     }
   }
 
@@ -1422,36 +1244,17 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
    */
   resetDrawContext_() {
     if (!this.targetContext_) {
-      chunkDebugLog('VectorLayer composite skipped (no offscreen)', {
-        layer: getUid(this.getLayer()),
-        dirty: this.drawContextDirty_,
-        frameTime: this.frameState?.time,
-      });
       return;
     }
     const alpha = this.targetContext_.globalAlpha;
     this.targetContext_.globalAlpha = this.opacity_;
     if (this.drawContextDirty_) {
       this.targetContext_.drawImage(this.context.canvas, 0, 0);
-      chunkDebugLog('VectorLayer composite applied', {
-        layer: getUid(this.getLayer()),
-        dirty: true,
-        frameTime: this.frameState?.time,
-      });
       this.updateLastComposite_(this.context.canvas);
     } else {
       if (this.lastCompositeCanvas_) {
         this.targetContext_.drawImage(this.lastCompositeCanvas_, 0, 0);
-        chunkDebugLog('VectorLayer composite reused last frame', {
-          layer: getUid(this.getLayer()),
-          frameTime: this.frameState?.time,
-        });
       } else {
-        chunkDebugLog('VectorLayer composite skipped (clean)', {
-          layer: getUid(this.getLayer()),
-          dirty: false,
-          frameTime: this.frameState?.time,
-        });
       }
     }
     this.targetContext_.globalAlpha = alpha;
@@ -1885,24 +1688,11 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
 
     if (participatesInShared) {
       if (this.enqueueSharedDraw_(frameState, executeDraw, sharedManager)) {
-        if (chunkDebugEnabled()) {
-          chunkDebugLog('VectorLayer shared draw enqueued', {
-            layer: getUid(this.getLayer()),
-            className: this.getLayer().getClassName(),
-          });
-        }
         return outputElement;
       }
     }
 
     const completed = executeDraw();
-    if (chunkDebugEnabled()) {
-      chunkDebugLog('VectorLayer shared draw immediate', {
-        layer: getUid(this.getLayer()),
-        className: this.getLayer().getClassName(),
-        completed,
-      });
-    }
     if (participatesInShared && sharedAttached && sharedManager) {
       sharedManager.detachLayer(this);
       sharedAttached = false;
@@ -2079,11 +1869,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         const budget = sharedManager.allocateBuildBudget(this, frameState);
         if (budget !== null && budget !== undefined) {
           this.setSharedBuildBudget(budget);
-          sharedDebugLog('Shared build budget assigned', {
-            layer: getUid(this.getLayer()),
-            budget,
-            frameTime: frameState.time,
-          });
         }
       }
     }
@@ -2232,18 +2017,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       }
     }
     if (existingBuildState && resetReasons && resetReasons.length > 0) {
-      chunkDebugLog('VectorLayer buildState reset', {
-        layer: getUid(this.getLayer()),
-        featureIndex: existingBuildState.featureIndex,
-        featureCount: existingBuildState.features?.length ?? 0,
-        ready: existingBuildState.ready,
-        reasons: resetReasons,
-        reasonsString:
-          resetReasons && resetReasons.length > 0
-            ? resetReasons.join(',')
-            : undefined,
-        frameTime: frameState.time,
-      });
       this.resetBuildState_();
       timings.renderedFeatures = this.lastRenderedCount_;
       timings.skippedFeatures = this.lastSkippedCount_;
@@ -2334,23 +2107,11 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       timings.skippedFeatures = 0;
       timings.lod = 0;
       this.ready = false;
-      chunkDebugLog('VectorLayer buildState start', {
-        layer: getUid(this.getLayer()),
-        featureCount: features.length,
-        frameTime: frameState.time,
-      });
       this.setFrameBuildProgress_(true, 0, buildState.featureCount, 0);
     } else {
       timings.renderedFeatures = buildState.renderedFeatures;
       timings.skippedFeatures = buildState.skippedFeatures;
       timings.lod = buildState.lod;
-      chunkDebugLog('VectorLayer buildState resume', {
-        layer: getUid(this.getLayer()),
-        featureIndex: buildState.featureIndex,
-        featureCount: buildState.features?.length ?? 0,
-        ready: buildState.ready,
-        frameTime: frameState.time,
-      });
       if (buildState.featureCount === undefined) {
         buildState.featureCount = buildState.features?.length ?? 0;
       }
@@ -2375,13 +2136,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       frameBudget?.getRemainingBuildBudget() ?? BUILD_TIME_BUDGET_MS;
     if (this.sharedBuildBudgetMs_ !== null) {
       const limited = Math.min(availableBuildBudget, this.sharedBuildBudgetMs_);
-      sharedDebugLog('Shared build budget applied', {
-        layer: getUid(this.getLayer()),
-        requested: availableBuildBudget,
-        sharedLimit: this.sharedBuildBudgetMs_,
-        applied: limited,
-        frameTime: frameState.time,
-      });
       availableBuildBudget = limited;
       this.sharedBuildBudgetMs_ = null;
     }
