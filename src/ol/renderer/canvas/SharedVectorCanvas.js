@@ -613,6 +613,29 @@ class SharedVectorCanvas {
   }
 
   /**
+   * Mark every participating renderer so they redraw on the shared surface.
+   * @param {import('./VectorLayer.js').default} [source] Renderer requesting invalidation.
+   */
+  invalidateParticipants(source) {
+    if (!this.participants_ || !this.participants_.length) {
+      return;
+    }
+    for (let i = 0; i < this.participants_.length; ++i) {
+      const layerState = this.participants_[i];
+      const layer = layerState.layer;
+      const candidateRenderer = layer?.getRenderer
+        ? layer.getRenderer()
+        : null;
+      if (
+        candidateRenderer &&
+        typeof candidateRenderer.invalidateSharedDrawStates === 'function'
+      ) {
+        candidateRenderer.invalidateSharedDrawStates();
+      }
+    }
+  }
+
+  /**
    * @return {boolean} Whether this manager can perform shared hit detection.
    */
   supportsHitDetection() {

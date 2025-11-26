@@ -1506,6 +1506,17 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
   }
 
   /**
+   * Invalidate all draw states so the shared canvas will repaint this layer.
+   */
+  invalidateSharedDrawStates() {
+    if (!this.drawStates_ || this.drawStates_.size === 0) {
+      return;
+    }
+    this.resetDrawStates_();
+    this.drawContextDirty_ = true;
+  }
+
+  /**
    * @return {boolean} Whether the primary draw state is complete.
    * @private
    */
@@ -1862,9 +1873,10 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     const timings = createFrameTimings();
     const frameBudget = frameState?.frameBudget ?? null;
     this.sharedBuildBudgetMs_ = null;
+    let sharedManager = null;
     if (frameState) {
       const sharedGroup = this.getSharedGroup_(frameState);
-      const sharedManager = sharedGroup ? sharedGroup.manager : null;
+      sharedManager = sharedGroup ? sharedGroup.manager : null;
       if (sharedManager && frameBudget) {
         const budget = sharedManager.allocateBuildBudget(this, frameState);
         if (budget !== null && budget !== undefined) {
@@ -1905,6 +1917,9 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     const vectorSource = vectorLayer.getSource();
     if (!vectorSource) {
       this.resetBuildState_();
+      if (sharedManager) {
+        sharedManager.invalidateParticipants(this);
+      }
       return false;
     }
 
@@ -2018,6 +2033,9 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     }
     if (existingBuildState && resetReasons && resetReasons.length > 0) {
       this.resetBuildState_();
+      if (sharedManager) {
+        sharedManager.invalidateParticipants(this);
+      }
       timings.renderedFeatures = this.lastRenderedCount_;
       timings.skippedFeatures = this.lastSkippedCount_;
       timings.lod = 0;
@@ -2108,6 +2126,9 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       timings.lod = 0;
       this.ready = false;
       this.setFrameBuildProgress_(true, 0, buildState.featureCount, 0);
+      if (sharedManager) {
+        sharedManager.invalidateParticipants(this);
+      }
     } else {
       timings.renderedFeatures = buildState.renderedFeatures;
       timings.skippedFeatures = buildState.skippedFeatures;
