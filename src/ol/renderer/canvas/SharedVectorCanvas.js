@@ -143,30 +143,6 @@ class SharedVectorCanvas {
 
     /**
      * @private
-     * @type {number}
-     */
-    this.buildFrameId_ = 0;
-
-    /**
-     * @private
-     * @type {Array<string>|null}
-     */
-    this.buildParticipants_ = null;
-
-    /**
-     * @private
-     * @type {Set<string>|null}
-     */
-    this.buildParticipantSet_ = null;
-
-    /**
-     * @private
-     * @type {Set<string>}
-     */
-    this.processedBuilders_ = new Set();
-
-    /**
-     * @private
      * @type {Map<import('./VectorLayer.js').default, {
      *   drawContext: CanvasRenderingContext2D,
      *   hostCanvas: HTMLCanvasElement,
@@ -273,14 +249,6 @@ class SharedVectorCanvas {
     this.jobs_.length = 0;
     this.pending_.length = 0;
     this.frameId_ = frameState ? frameState.time : 0;
-    this.buildFrameId_ = this.frameId_;
-    this.buildParticipants_ = layers
-      ? layers.map((state) => getUid(state.layer))
-      : null;
-    this.buildParticipantSet_ = this.buildParticipants_
-      ? new Set(this.buildParticipants_)
-      : null;
-    this.processedBuilders_.clear();
     this.eventContexts_.clear();
     this.participants_ = layers ? layers.slice() : null;
     this.hitDetectionCache_ = null;
@@ -809,58 +777,6 @@ class SharedVectorCanvas {
       this.declutterFeatureCache_.set(tree, cached);
     }
     return cached.features;
-  }
-
-  /**
-   * Distribute build time across participating layers for this frame.
-   * @param {import('./VectorLayer.js').default} renderer Renderer.
-    * @param {import('../../Map.js').FrameState} frameState Frame state.
-   * @return {number|null} Milliseconds allotted for this build slice.
-   */
-  allocateBuildBudget(renderer, frameState) {
-    if (!frameState || !frameState.frameBudget) {
-      return null;
-    }
-    if (this.buildFrameId_ !== frameState.time) {
-      this.buildFrameId_ = frameState.time;
-      this.processedBuilders_.clear();
-    }
-    const participants = this.buildParticipants_;
-    if (!participants || participants.length === 0) {
-      return null;
-    }
-    const layerUid = getUid(renderer.getLayer());
-    const participantSet = this.buildParticipantSet_;
-    const participates = participantSet
-      ? participantSet.has(layerUid)
-      : participants.includes(layerUid);
-    if (!participates) {
-      return null;
-    }
-    if (this.processedBuilders_.has(layerUid)) {
-      return null;
-    }
-    const processedCount = this.processedBuilders_.size;
-    const pending = Math.max(1, participants.length - processedCount);
-    const remaining =
-      frameState.frameBudget.getRemainingBuildBudget();
-    const budget = this.getJobBudget_(remaining, pending);
-    this.processedBuilders_.add(layerUid);
-    return budget;
-  }
-
-  /**
-   * Compute the per-job budget for build tasks.
-   * @param {number} remaining Remaining build budget from the FrameBudget.
-   * @param {number} jobsRemaining Jobs still queued (including current).
-   * @return {number} Milliseconds allotted to the job.
-   * @private
-   */
-  getJobBudget_(remaining, jobsRemaining) {
-    if (!isFinite(remaining) || remaining <= 0 || jobsRemaining <= 0) {
-      return 0;
-    }
-    return remaining / jobsRemaining;
   }
 
   /**
