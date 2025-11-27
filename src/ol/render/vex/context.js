@@ -72,6 +72,7 @@ function getOffscreenSurface(canvas) {
         typeof OffscreenCanvas !== 'undefined' &&
         offscreen instanceof OffscreenCanvas
       ) {
+        // Mark the original canvas so other code knows it cannot be resized anymore.
         canvas.__olOffscreenTransferred = true;
       }
       return offscreen;

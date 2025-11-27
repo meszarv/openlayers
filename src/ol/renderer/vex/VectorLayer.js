@@ -110,6 +110,8 @@ class VexVectorLayerRenderer extends LayerRenderer {
     this.sceneInverseTransform_ = null;
 
     /**
+     * Track pixel size separately so OffscreenCanvas-backed elements can signal resizes
+     * without touching the HTMLCanvasElement width/height (which would throw after transfer).
      * @type {number}
      * @private
      */

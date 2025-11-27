@@ -8,6 +8,7 @@ import Point from '../src/ol/geom/Point.js';
 import Polygon from '../src/ol/geom/Polygon.js';
 import TileLayer from '../src/ol/layer/Tile.js';
 import VectorLayer from '../src/ol/layer/Vector.js';
+import VexVectorLayer from '../src/ol/layer/VexVector.js';
 import {fromLonLat} from '../src/ol/proj.js';
 import OSM from '../src/ol/source/OSM.js';
 import VectorSource from '../src/ol/source/Vector.js';
@@ -422,6 +423,10 @@ function setEditingStatusMessage(message) {
 }
 
 function getRendererSwitchZoom() {
+  if (vectorLayer && typeof vectorLayer.getVexSwitchZoom === 'function') {
+    // Prefer OL's adaptive threshold when available.
+    return vectorLayer.getVexSwitchZoom();
+  }
   const value =
     typeof window !== 'undefined'
       ? Number(window.vexRendererSwitchZoom)
@@ -453,6 +458,7 @@ function refreshLayerCache() {
     return;
   }
   if (typeof vectorLayer.invalidateRendererCache === 'function') {
+    // Re-record Vex instructions without tearing the renderer down.
     vectorLayer.invalidateRendererCache();
   } else {
     vectorLayer.changed();
@@ -462,12 +468,14 @@ function refreshLayerCache() {
 
 
 function createVectorLayer(useVex) {
-  const layer = new VectorLayer({
-    rendererHint: useVex ? 'vex' : 'canvas',
+  const layerOptions = {
     source: vectorSource,
     style: styleFunction,
     opacity: 0.95,
-  });
+  };
+  const layer = useVex
+    ? new VexVectorLayer(layerOptions)
+    : new VectorLayer(layerOptions);
   if (typeof layer.addFeatures !== 'function') {
     layer.addFeatures = function addFeatures(features) {
       const source = this.getSource();

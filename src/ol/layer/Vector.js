@@ -145,6 +145,7 @@ class VectorLayer extends BaseVectorLayer {
     this.viewChangeKey_ = null;
 
     /**
+     * Detached Vex renderer we keep around for fast reuse after auto-switching.
      * @type {import("../renderer/vex/VectorLayer.js").default|null}
      * @private
      */
@@ -169,6 +170,13 @@ class VectorLayer extends BaseVectorLayer {
    */
   getActiveRendererHint() {
     return this.activeRendererHint_ || this.rendererHint_;
+  }
+
+  /**
+   * @return {number} Zoom level where the renderer switches from Vex to Canvas.
+   */
+  getVexSwitchZoom() {
+    return getVexRendererSwitchZoom();
   }
 
   /**
@@ -338,6 +346,7 @@ class VectorLayer extends BaseVectorLayer {
   switchRenderer_(rendererHint) {
     const currentRenderer = this.renderer_;
     if (currentRenderer) {
+      // Cache or dispose renderer before replacing so we can reuse Vex instances.
       this.cacheRenderer_(currentRenderer);
       this.renderer_ = null;
       this.rendered = false;
@@ -361,6 +370,7 @@ class VectorLayer extends BaseVectorLayer {
     if (rendererHint !== 'vex' || !this.cachedVexRenderer_) {
       return null;
     }
+    // Rehydrating a cached Vex renderer is faster than rebuilding its scene.
     const renderer = this.cachedVexRenderer_;
     this.cachedVexRenderer_ = null;
     return renderer;
@@ -391,6 +401,7 @@ class VectorLayer extends BaseVectorLayer {
       if (container && container.parentNode) {
         container.parentNode.removeChild(container);
       }
+      // Keep the renderer (and its OffscreenCanvas) alive for a future switch.
       this.cachedVexRenderer_ = renderer;
       return;
     }
@@ -417,6 +428,7 @@ class VectorLayer extends BaseVectorLayer {
       this.renderer_ instanceof VexVectorLayerRenderer &&
       typeof this.renderer_.invalidateCache === 'function'
     ) {
+      // Force the live Vex renderer to drop recorded instructions.
       this.renderer_.invalidateCache();
       invalidated = true;
     }
@@ -424,6 +436,7 @@ class VectorLayer extends BaseVectorLayer {
       this.cachedVexRenderer_ &&
       typeof this.cachedVexRenderer_.invalidateCache === 'function'
     ) {
+      // Keep cached renderer in sync so it doesn't restore stale visuals later.
       this.cachedVexRenderer_.invalidateCache();
       invalidated = true;
     }
