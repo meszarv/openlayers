@@ -96,6 +96,22 @@ class VectorLayer extends BaseVectorLayer {
     }
     return new CanvasVectorLayerRenderer(this);
   }
+
+  /**
+   * @override
+   */
+  changed() {
+    const renderer = this.hasRenderer() ? this.getRenderer() : null;
+    if (renderer) {
+      if (typeof renderer.invalidateSharedDrawStates === 'function') {
+        renderer.invalidateSharedDrawStates();
+      }
+      if (typeof renderer.notifySharedLayerChange === 'function') {
+        renderer.notifySharedLayerChange();
+      }
+    }
+    super.changed();
+  }
 }
 
 export default VectorLayer;

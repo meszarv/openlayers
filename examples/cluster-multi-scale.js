@@ -86,6 +86,26 @@ const styles = {
   }),
 };
 
+const highlightPolygonStyle = new Style({
+  fill: new Fill({color: 'rgba(255, 255, 255, 0.25)'}),
+  stroke: new Stroke({color: '#ffb300', width: 3}),
+});
+const highlightPlateStyle = new Style({
+  image: new CircleStyle({
+    radius: 6,
+    fill: new Fill({color: 'rgba(255, 241, 118, 0.9)'}),
+    stroke: new Stroke({color: '#f57f17', width: 1.6}),
+  }),
+});
+const highlightStyles = {
+  city: highlightPolygonStyle,
+  house: highlightPolygonStyle,
+  room: highlightPolygonStyle,
+  roomText: highlightPolygonStyle,
+  table: highlightPolygonStyle,
+  plate: highlightPlateStyle,
+};
+
 const LETTER_GRID_COLS = 5;
 const LETTER_GRID_ROWS = 7;
 const LETTER_PATTERNS = {
@@ -104,7 +124,19 @@ const LEVEL_PROPERTIES = {
   plate: Object.freeze({level: 'plate'}),
 };
 
-const styleForFeature = (feature) => styles[feature.get('level')];
+let hoveredFeature = null;
+let hoveredLayer = null;
+
+const styleForFeature = (feature) => {
+  const level = feature.get('level');
+  if (!level) {
+    return null;
+  }
+  if (feature === hoveredFeature) {
+    return highlightStyles[level] ?? styles[level];
+  }
+  return styles[level];
+};
 
 const baseLayer = new TileLayer({
   source: new OSM(),
@@ -133,6 +165,42 @@ const map = new Map({
     center: [0, 0],
     zoom: 3,
   }),
+});
+
+const viewportElement = map.getViewport();
+
+function updateHoveredFeature(feature, layer) {
+  if (feature === hoveredFeature && layer === hoveredLayer) {
+    return;
+  }
+  const previousLayer = hoveredLayer;
+  hoveredFeature = feature;
+  hoveredLayer = layer;
+  if (previousLayer && previousLayer !== hoveredLayer) {
+    previousLayer.changed();
+  }
+  hoveredLayer?.changed();
+}
+
+map.on('pointermove', (event) => {
+  if (event.dragging) {
+    return;
+  }
+  const hit = map.forEachFeatureAtPixel(event.pixel, (feature, layer) => ({
+    feature,
+    layer,
+  }));
+  if (hit) {
+    updateHoveredFeature(hit.feature, hit.layer);
+  } else {
+    updateHoveredFeature(null, null);
+  }
+  viewportElement.style.cursor = hit ? 'pointer' : '';
+});
+
+viewportElement.addEventListener('mouseout', () => {
+  viewportElement.style.cursor = '';
+  updateHoveredFeature(null, null);
 });
 
 let lastFrameTimestamp = null;
