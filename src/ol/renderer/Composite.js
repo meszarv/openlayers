@@ -14,6 +14,19 @@ import {getUid} from '../util.js';
 import MapRenderer from './Map.js';
 import CanvasVectorLayerRenderer from './canvas/VectorLayer.js';
 
+/**
+ * @typedef {Object} LayerStateSummary
+ * @property {string} uid
+ * @property {number} zIndex
+ * @property {boolean} visible
+ * @property {boolean} shareable
+ * @property {string} className
+ * @property {boolean|string|number|undefined} declutter
+ * @property {*} background
+ * @property {*|undefined} style
+ * @property {*|undefined} styleFunction
+ */
+
 function sharedDebugEnabled() {
   return typeof window !== 'undefined' && !!window && !!window.__OL_SHARED_DEBUG;
 }
@@ -76,6 +89,178 @@ class CompositeMapRenderer extends MapRenderer {
      * @type {boolean}
      */
     this.renderedVisible_ = true;
+
+    /**
+     * @private
+     * @type {Array<LayerStateSummary>|null}
+     */
+    this.layerStateSummaryCache_ = null;
+
+    /**
+     * @private
+     * @type {Array<{renderer: CanvasVectorLayerRenderer, layers: Array<import('../layer/Layer.js').State>, manager: import('./canvas/SharedVectorCanvas.js').default}>|null}
+     */
+    this.sharedLayerGroupsCache_ = null;
+
+    /**
+     * @private
+     * @type {Map<string, {renderer: CanvasVectorLayerRenderer, layers: Array<import('../layer/Layer.js').State>, manager: import('./canvas/SharedVectorCanvas.js').default}>|null}
+     */
+    this.sharedLayerGroupLookupCache_ = null;
+  }
+
+  /**
+   * Determine if existing shared layer groups can be reused.
+   * @param {Array<import('../layer/Layer.js').State>} layerStates Layer states.
+   * @return {boolean} Whether cached grouping is still valid.
+   * @private
+   */
+  canReuseSharedLayerGroups_(layerStates) {
+    if (!this.layerStateSummaryCache_) {
+      return false;
+    }
+    if (this.layerStateSummaryCache_.length !== layerStates.length) {
+      return false;
+    }
+    for (let i = 0; i < layerStates.length; ++i) {
+      const cached = this.layerStateSummaryCache_[i];
+      const layerState = layerStates[i];
+      const layer = layerState.layer;
+      if (!layer) {
+        return false;
+      }
+      const zIndex = layerState.zIndex ?? 0;
+      if (
+        cached.uid !== getUid(layer) ||
+        cached.zIndex !== zIndex ||
+        cached.visible !== !!layerState.visible
+      ) {
+        return false;
+      }
+      const shareable = this.isShareableVectorLayer_(layerState);
+      if (cached.shareable !== shareable) {
+        return false;
+      }
+      if (!shareable) {
+        continue;
+      }
+      const declutter =
+        typeof layer.getDeclutter === 'function'
+          ? layer.getDeclutter()
+          : undefined;
+      const background = this.getLayerBackgroundSignature_(layer);
+      const style = this.getLayerStyleSignature_(layer);
+      const styleFunction =
+        typeof layer.getStyleFunction === 'function'
+          ? layer.getStyleFunction()
+          : undefined;
+      if (
+        cached.className !== layer.getClassName() ||
+        cached.declutter !== declutter ||
+        cached.background !== background ||
+        cached.style !== style ||
+        cached.styleFunction !== styleFunction
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Recompute shared layer metadata when invalidated.
+   * @param {import('../Map.js').FrameState} frameState Frame state.
+   * @param {Array<import('../layer/Layer.js').State>} layerStates Layer states.
+   * @private
+   */
+  rebuildSharedLayerGroupsCache_(frameState, layerStates) {
+    const layerGroups = this.buildLayerGroups_(layerStates);
+    const sharedLayerGroups = this.extractSharedLayerGroups_(layerGroups);
+    if (sharedLayerGroups.length > 0) {
+      const lookup = new Map();
+      for (let i = 0; i < sharedLayerGroups.length; ++i) {
+        const entry = sharedLayerGroups[i];
+        entry.manager.reset(frameState, entry.layers);
+        for (let j = 0; j < entry.layers.length; ++j) {
+          const uid = getUid(entry.layers[j].layer);
+          lookup.set(uid, entry);
+        }
+      }
+      this.sharedLayerGroupsCache_ = sharedLayerGroups;
+      this.sharedLayerGroupLookupCache_ = lookup;
+    } else {
+      this.sharedLayerGroupsCache_ = null;
+      this.sharedLayerGroupLookupCache_ = null;
+    }
+    this.layerStateSummaryCache_ = this.createLayerStateSummary_(layerStates);
+  }
+
+  /**
+   * Build lightweight signatures for layer state array.
+   * @param {Array<import('../layer/Layer.js').State>} layerStates Layer states.
+   * @return {Array<LayerStateSummary>} Summary.
+   * @private
+   */
+  createLayerStateSummary_(layerStates) {
+    const summary = new Array(layerStates.length);
+    for (let i = 0; i < layerStates.length; ++i) {
+      const layerState = layerStates[i];
+      const layer = layerState.layer;
+      const shareable = this.isShareableVectorLayer_(layerState);
+      summary[i] = {
+        uid: getUid(layer),
+        zIndex: layerState.zIndex ?? 0,
+        visible: !!layerState.visible,
+        shareable,
+        className: layer.getClassName(),
+        declutter:
+          shareable && typeof layer.getDeclutter === 'function'
+            ? layer.getDeclutter()
+            : undefined,
+        background: shareable
+          ? this.getLayerBackgroundSignature_(layer)
+          : undefined,
+        style: shareable ? this.getLayerStyleSignature_(layer) : undefined,
+        styleFunction:
+          shareable && typeof layer.getStyleFunction === 'function'
+            ? layer.getStyleFunction()
+            : undefined,
+      };
+    }
+    return summary;
+  }
+
+  /**
+   * Normalize background to comparable signature.
+   * @param {import('../layer/Layer.js').default} layer Layer.
+   * @return {*} Signature value.
+   * @private
+   */
+  getLayerBackgroundSignature_(layer) {
+    if (typeof layer.getBackground !== 'function') {
+      return undefined;
+    }
+    const background = layer.getBackground();
+    if (Array.isArray(background)) {
+      return background.join(',');
+    }
+    return background;
+  }
+
+  /**
+   * Extract comparable style signature.
+   * @param {import('../layer/Layer.js').default} layer Layer.
+   * @return {*|undefined} Signature.
+   * @private
+   */
+  getLayerStyleSignature_(layer) {
+    if (typeof layer.getStyle === 'function') {
+      return layer.getStyle();
+    }
+    if (typeof layer.getStyleFunction === 'function') {
+      return layer.getStyleFunction();
+    }
+    return undefined;
   }
 
   /**
@@ -120,20 +305,15 @@ class CompositeMapRenderer extends MapRenderer {
     const layerStatesArray = frameState.layerStatesArray.sort(
       (a, b) => a.zIndex - b.zIndex,
     );
-    const layerGroups = this.buildLayerGroups_(layerStatesArray);
-    const sharedLayerGroups = this.extractSharedLayerGroups_(layerGroups);
-    if (sharedLayerGroups.length > 0) {
-      const lookup = new Map();
-      for (let i = 0; i < sharedLayerGroups.length; ++i) {
-        const entry = sharedLayerGroups[i];
-        entry.manager.reset(frameState, entry.layers);
-        for (let j = 0; j < entry.layers.length; ++j) {
-          const uid = getUid(entry.layers[j].layer);
-          lookup.set(uid, entry);
-        }
-      }
+    const canReuseSharedGroups =
+      this.canReuseSharedLayerGroups_(layerStatesArray);
+    if (!canReuseSharedGroups) {
+      this.rebuildSharedLayerGroupsCache_(frameState, layerStatesArray);
+    }
+    const sharedLayerGroups = this.sharedLayerGroupsCache_;
+    if (sharedLayerGroups && sharedLayerGroups.length > 0) {
       frameState.sharedLayerGroups = sharedLayerGroups;
-      frameState.sharedLayerGroupLookup = lookup;
+      frameState.sharedLayerGroupLookup = this.sharedLayerGroupLookupCache_;
     } else {
       frameState.sharedLayerGroups = null;
       frameState.sharedLayerGroupLookup = null;

@@ -854,6 +854,13 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       drawState.declutterTree = declutterTreeRef ?? undefined;
     }
 
+    if (drawState && sharedManager) {
+      // const managerEpoch = sharedManager.getContextEpoch();
+      // if (drawState.sharedEpoch !== managerEpoch) {
+        drawState.completed = false;
+      // }
+    }
+
     if (drawState && drawState.completed) {
       if (measureTime) {
         this.recordDrawDuration_(

@@ -88,23 +88,12 @@ class SharedVectorCanvas {
 
     /**
      * @private
-     * @type {Array<{
-     *   renderer: import('./VectorLayer.js').default,
-     *   callback: function():boolean,
-     *   frameState: import('../../Map.js').FrameState
+     * @type {Map<import('./VectorLayer.js').default, {
+     *   callbacks: Array<{callback:function():boolean, frameState: import('../../Map.js').FrameState}>,
+     *   nextIndex: number
      * }>}
      */
-    this.jobs_ = [];
-
-    /**
-     * @private
-     * @type {Array<{
-     *   renderer: import('./VectorLayer.js').default,
-     *   callback: function():boolean,
-     *   frameState: import('../../Map.js').FrameState
-     * }>}
-     */
-    this.pending_ = [];
+    this.layerCallbacks_ = new Map();
 
     /**
      * @private
@@ -206,19 +195,15 @@ class SharedVectorCanvas {
 
     /**
      * @private
-     * @type {Array<{
-     *   renderer: import('./VectorLayer.js').default,
-     *   callback: function():boolean,
-     *   frameState: import('../../Map.js').FrameState
-     * }>|null}
+     * @type {import('./VectorLayer.js').default|null}
      */
-    this.activeRunQueue_ = null;
+    this.activeRenderer_ = null;
 
     /**
      * @private
      * @type {number}
      */
-    this.activeRunIndex_ = -1;
+    this.activeCallbackIndex_ = -1;
 
     /**
      * @private
@@ -246,11 +231,12 @@ class SharedVectorCanvas {
    * @param {Array<import('../../layer/Layer.js').State>} [layers] Participating layer states.
    */
   reset(frameState, layers) {
-    this.jobs_.length = 0;
-    this.pending_.length = 0;
+    this.layerCallbacks_.clear();
     this.frameId_ = frameState ? frameState.time : 0;
     this.eventContexts_.clear();
     this.participants_ = layers ? layers.slice() : null;
+    this.activeRenderer_ = null;
+    this.activeCallbackIndex_ = -1;
     this.hitDetectionCache_ = null;
     this.declutterFeatureCache_ = new WeakMap();
     if (this.pendingDraws_ === 0) {
@@ -285,7 +271,7 @@ class SharedVectorCanvas {
       epochBumped = true;
     }
     const shouldPrepare =
-      !this.context_ || this.pendingDraws_ === 0 || viewChanged;
+      !this.context_  || viewChanged//|| this.pendingDraws_ === 0;
     if (shouldPrepare) {
       this.hostRenderer_.prepareContainer(frameState, target);
       this.context_ = this.hostRenderer_.context;
@@ -370,27 +356,21 @@ class SharedVectorCanvas {
    * @private
    */
   cancelPendingJobs_(reason) {
-    const cancelJob = (job) => {
-      if (!job) {
+    this.layerCallbacks_.forEach((entry, renderer) => {
+      if (!entry) {
         return;
       }
-      if (job.frameState) {
-        job.frameState.animate = true;
+      for (let i = entry.nextIndex; i < entry.callbacks.length; ++i) {
+        const job = entry.callbacks[i];
+        if (job && job.frameState) {
+          job.frameState.animate = true;
+        }
       }
-      this.detachLayer(job.renderer);
-    };
-    while (this.pending_.length) {
-      cancelJob(this.pending_.pop());
-    }
-    while (this.jobs_.length) {
-      cancelJob(this.jobs_.pop());
-    }
-    if (this.activeRunQueue_) {
-      for (let i = this.activeRunIndex_ + 1; i < this.activeRunQueue_.length; ++i) {
-        cancelJob(this.activeRunQueue_[i]);
-      }
-      this.activeRunQueue_.length = Math.max(0, this.activeRunIndex_ + 1);
-    }
+      this.detachLayer(renderer);
+    });
+    this.layerCallbacks_.clear();
+    this.activeRenderer_ = null;
+    this.activeCallbackIndex_ = -1;
     if (this.activeDraws_.size) {
       const active = Array.from(this.activeDraws_.keys());
       for (let i = 0; i < active.length; ++i) {
@@ -546,7 +526,44 @@ class SharedVectorCanvas {
    * @param {function():boolean} callback Draw callback.
    */
   enqueue(renderer, callback, frameState) {
-    this.jobs_.push({renderer, callback, frameState});
+    if (!renderer) {
+      return;
+    }
+    let entry = this.layerCallbacks_.get(renderer);
+    if (!entry) {
+      entry = {callbacks: [], nextIndex: 0};
+      this.layerCallbacks_.set(renderer, entry);
+    }
+    entry.callbacks.push({callback, frameState});
+  }
+
+  /**
+   * Compute renderer execution order from current participants.
+   * @return {Array<import('./VectorLayer.js').default>} Ordered renderers.
+   * @private
+   */
+  getRendererExecutionOrder_() {
+    const order = [];
+    const seen = new Set();
+    if (this.participants_) {
+      for (let i = 0; i < this.participants_.length; ++i) {
+        const layerState = this.participants_[i];
+        const renderer = layerState?.layer?.getRenderer
+          ? layerState.layer.getRenderer()
+          : null;
+        if (renderer && this.layerCallbacks_.has(renderer) && !seen.has(renderer)) {
+          order.push(renderer);
+          seen.add(renderer);
+        }
+      }
+    }
+    this.layerCallbacks_.forEach((entry, renderer) => {
+      if (!seen.has(renderer)) {
+        order.push(renderer);
+        seen.add(renderer);
+      }
+    });
+    return order;
   }
 
   /**
@@ -783,58 +800,73 @@ class SharedVectorCanvas {
    * Execute all enqueued draw callbacks sequentially.
    */
   draw() {
-    if (!this.jobs_.length && !this.pending_.length) {
+    if (!this.layerCallbacks_.size) {
       return;
     }
-    const runQueue = [...this.pending_, ...this.jobs_];
-    this.jobs_.length = 0;
-    this.pending_.length = 0;
-    this.activeRunQueue_ = runQueue;
-    this.activeRunIndex_ = -1;
     const runCancelId = this.epochCancelId_;
+    const order = this.getRendererExecutionOrder_();
     let currentBudget = null;
-    for (let i = 0; i < runQueue.length; ++i) {
-      this.activeRunIndex_ = i;
-      const job = runQueue[i];
-      let completed = true;
-      if (job.frameState && job.frameState.frameBudget) {
-        if (currentBudget === null) {
+    for (let i = 0; i < order.length; ++i) {
+      const renderer = order[i];
+      const entry = this.layerCallbacks_.get(renderer);
+      if (!entry || !entry.callbacks.length) {
+        this.layerCallbacks_.delete(renderer);
+        continue;
+      }
+      this.activeRenderer_ = renderer;
+      while (entry.nextIndex < entry.callbacks.length) {
+        this.activeCallbackIndex_ = entry.nextIndex;
+        const job = entry.callbacks[entry.nextIndex];
+        if (!job) {
+          entry.nextIndex += 1;
+          continue;
+        }
+        const frameState = job.frameState;
+        if (frameState && frameState.frameBudget) {
+          if (currentBudget === null) {
+            currentBudget =
+              frameState.frameBudget.getRemainingDrawBudget();
+          }
+          if (renderer.setSharedDrawBudget) {
+            renderer.setSharedDrawBudget(currentBudget);
+          }
+        } else if (renderer.setSharedDrawBudget) {
+          renderer.setSharedDrawBudget(null);
+        }
+        let completed = true;
+        try {
+          completed = job.callback();
+        } finally {
+          if (renderer.setSharedDrawBudget) {
+            renderer.setSharedDrawBudget(null);
+          }
+          this.detachLayer(renderer);
+        }
+        if (frameState && frameState.frameBudget) {
           currentBudget =
-            job.frameState.frameBudget.getRemainingDrawBudget();
+            frameState.frameBudget.getRemainingDrawBudget();
         }
-        const jobBudget = currentBudget;
-        if (job.renderer.setSharedDrawBudget) {
-          job.renderer.setSharedDrawBudget(jobBudget);
+        if (!completed) {
+          const activeFrameState = renderer.frameState || frameState;
+          if (activeFrameState) {
+            activeFrameState.animate = true;
+          }
+          break;
         }
-      } else {
-        if (job.renderer.setSharedDrawBudget) {
-          job.renderer.setSharedDrawBudget(null);
-        }
-      }
-      try {
-        completed = job.callback();
-      } finally {
-        if (job.renderer.setSharedDrawBudget) {
-          job.renderer.setSharedDrawBudget(null);
-        }
-        this.detachLayer(job.renderer);
-      }
-      if (!completed) {
-        this.pending_.push(job);
-        if (job.frameState) {
-          job.frameState.animate = true;
+        entry.nextIndex += 1;
+        if (runCancelId !== this.epochCancelId_) {
+          break;
         }
       }
-      if (job.frameState && job.frameState.frameBudget) {
-        currentBudget =
-          job.frameState.frameBudget.getRemainingDrawBudget();
+      if (entry.nextIndex >= entry.callbacks.length) {
+        this.layerCallbacks_.delete(renderer);
       }
       if (runCancelId !== this.epochCancelId_) {
         break;
       }
     }
-    this.activeRunQueue_ = null;
-    this.activeRunIndex_ = -1;
+    this.activeRenderer_ = null;
+    this.activeCallbackIndex_ = -1;
   }
 }
 
