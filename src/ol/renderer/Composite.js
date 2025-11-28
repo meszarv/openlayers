@@ -472,7 +472,7 @@ class CompositeMapRenderer extends MapRenderer {
     const shared = [];
     for (let i = 0; i < groups.length; ++i) {
       const group = groups[i];
-      if (!group.shareable || !group.host || group.layers.length < 2) {
+      if (!group.shareable || !group.host || group.layers.length === 0) {
         continue;
       }
       const renderer = group.host.layer.getRenderer();

@@ -120,6 +120,10 @@ function createFrameTimings() {
     build: 0,
     draw: 0,
     lod: 0,
+    prepare: 0,
+    setup: 0,
+    preRender: 0,
+    postRender: 0,
     renderedFeatures: 0,
     skippedFeatures: 0,
     totalStart: start,
@@ -855,10 +859,10 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     }
 
     if (drawState && sharedManager) {
-      // const managerEpoch = sharedManager.getContextEpoch();
-      // if (drawState.sharedEpoch !== managerEpoch) {
+      const managerEpoch = sharedManager.getContextEpoch();
+      if (drawState.sharedEpoch !== managerEpoch) {
         drawState.completed = false;
-      // }
+      }
     }
 
     if (drawState && drawState.completed) {
@@ -1168,6 +1172,67 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
   }
 
   /**
+   * @private
+   * @param {import("../../Map.js").FrameState} frameState Frame state.
+   * @param {number} duration Duration in milliseconds.
+   */
+  recordSetupDuration_(frameState, duration) {
+    if (!duration || !this.frameTimings_) {
+      return;
+    }
+    this.frameTimings_.setup += duration;
+    this.updateLayerTimings_(frameState);
+  }
+
+  /**
+   * @private
+   * @param {import("../../Map.js").FrameState} frameState Frame state.
+   * @param {number} duration Duration in milliseconds.
+   */
+  recordPreRenderDuration_(frameState, duration) {
+    if (!duration || !this.frameTimings_) {
+      return;
+    }
+    this.frameTimings_.preRender += duration;
+    this.updateLayerTimings_(frameState);
+  }
+
+  /**
+   * @private
+   * @param {import("../../Map.js").FrameState} frameState Frame state.
+   * @param {number} duration Duration in milliseconds.
+   */
+  recordPostRenderDuration_(frameState, duration) {
+    if (!duration || !this.frameTimings_) {
+      return;
+    }
+    this.frameTimings_.postRender += duration;
+    this.updateLayerTimings_(frameState);
+  }
+
+  /**
+   * @private
+   * @param {import("../../Map.js").FrameState} frameState Frame state.
+   * @param {number} startTime Start timestamp.
+   * @param {number} initialBuild Build duration before prepare work.
+   */
+  recordPrepareOverhead_(frameState, startTime, initialBuild) {
+    if (!this.frameTimings_ || !isFinite(startTime)) {
+      return;
+    }
+    const totalDuration = Math.max(0, now() - startTime);
+    const buildDelta = Math.max(
+      0,
+      this.frameTimings_.build - (initialBuild || 0),
+    );
+    const overhead = Math.max(0, totalDuration - buildDelta);
+    if (overhead) {
+      this.frameTimings_.prepare += overhead;
+      this.updateLayerTimings_(frameState);
+    }
+  }
+
+  /**
    * @param {?number} budgetMs Maximum draw time to advance in this invocation.
    */
   setSharedDrawBudget(budgetMs) {
@@ -1435,7 +1500,15 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     if (!this.frameTimings_) {
       return;
     }
-    this.frameTimings_.total = now() - this.frameTimings_.totalStart;
+    const phaseTotal =
+      this.frameTimings_.build +
+      this.frameTimings_.draw +
+      this.frameTimings_.lod +
+      this.frameTimings_.prepare +
+      this.frameTimings_.setup +
+      this.frameTimings_.preRender +
+      this.frameTimings_.postRender;
+    this.frameTimings_.total = phaseTotal;
     if (
       !frameState.layerTimings ||
       frameState.layerTimingsTimestamp !== frameState.time
@@ -1445,15 +1518,19 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     }
     const map = frameState.layerTimings;
     const layerUid = getUid(this.getLayer());
-    map.set(layerUid, {
-      build: this.frameTimings_.build,
-      draw: this.frameTimings_.draw,
-      lod: this.frameTimings_.lod,
-      renderedFeatures: this.frameTimings_.renderedFeatures,
-      skippedFeatures: this.frameTimings_.skippedFeatures,
-      total: this.frameTimings_.total,
-      buildPending: this.frameTimings_.buildPending,
-      buildProgress: this.frameTimings_.buildProgress,
+      map.set(layerUid, {
+        build: this.frameTimings_.build,
+        draw: this.frameTimings_.draw,
+        lod: this.frameTimings_.lod,
+        prepare: this.frameTimings_.prepare,
+        setup: this.frameTimings_.setup,
+        preRender: this.frameTimings_.preRender,
+        postRender: this.frameTimings_.postRender,
+        renderedFeatures: this.frameTimings_.renderedFeatures,
+        skippedFeatures: this.frameTimings_.skippedFeatures,
+        total: this.frameTimings_.total,
+        buildPending: this.frameTimings_.buildPending,
+        buildProgress: this.frameTimings_.buildProgress,
       buildProcessedFeatures: this.frameTimings_.buildProcessedFeatures,
       buildTotalFeatures: this.frameTimings_.buildTotalFeatures,
       buildChunkCount: this.frameTimings_.buildChunkCount,
@@ -1547,6 +1624,19 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
    * @override
    */
   renderFrame(frameState, target) {
+    const setupStart = now();
+    let setupRecorded = false;
+    const recordSetupDuration = (endTime) => {
+      if (setupRecorded) {
+        return;
+      }
+      const stop = endTime !== undefined ? endTime : now();
+      const duration = Math.max(0, stop - setupStart);
+      if (duration) {
+        this.recordSetupDuration_(frameState, duration);
+      }
+      setupRecorded = true;
+    };
     const layerState = frameState.layerStatesArray[frameState.layerIndex];
     this.opacity_ = layerState.opacity;
     const viewState = frameState.viewState;
@@ -1577,6 +1667,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         this.getLayer().hasListener(RenderEventType.PRERENDER) ||
         this.getLayer().hasListener(RenderEventType.POSTRENDER);
       if (!hasRenderListeners && !participatesInShared) {
+        recordSetupDuration();
         return null;
       }
     }
@@ -1590,7 +1681,10 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       participatesInShared ? sharedManager : null,
     );
 
+    const preRenderStart = now();
+    recordSetupDuration(preRenderStart);
     this.preRender(eventContext, frameState);
+    this.recordPreRenderDuration_(frameState, Math.max(0, now() - preRenderStart));
 
     const executeDraw = () => {
       let sharedDrawStarted = false;
@@ -1634,6 +1728,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
           frameContext.restore();
         }
 
+        const postRenderStart = now();
         this.postRender(eventContext, frameState);
         this.updateBuildOverlay_();
 
@@ -1644,6 +1739,10 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         if (!frameState.declutter) {
           this.resetDrawContext_();
         }
+        this.recordPostRenderDuration_(
+          frameState,
+          Math.max(0, now() - postRenderStart),
+        );
         completed = this.isPrimaryDrawComplete_();
         threw = false;
         return completed;
@@ -1661,6 +1760,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
 
     if (participatesInShared) {
       if (this.enqueueSharedDraw_(frameState, executeDraw, sharedManager)) {
+        recordSetupDuration();
         return outputElement;
       }
     }
@@ -1833,357 +1933,362 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
   */
   prepareFrame(frameState) {
     const timings = createFrameTimings();
+    this.frameTimings_ = timings;
+    const prepareStart = now();
+    const initialBuild = timings.build;
     let sharedManager = null;
     if (frameState) {
       const sharedGroup = this.getSharedGroup_(frameState);
       sharedManager = sharedGroup ? sharedGroup.manager : null;
     }
-    if (this.buildState_) {
-      timings.renderedFeatures = this.buildState_.renderedFeatures;
-      timings.skippedFeatures = this.buildState_.skippedFeatures;
-      timings.lod = this.buildState_.lod;
-    } else {
-      timings.renderedFeatures = this.lastRenderedCount_;
-      timings.skippedFeatures = this.lastSkippedCount_;
-    }
-    this.frameTimings_ = timings;
-    if (this.buildState_) {
-      const initialFeatureCount =
-        this.buildState_.featureCount ?? this.buildState_.features?.length ?? 0;
-      this.setFrameBuildProgress_(
-        true,
-        this.buildState_.featureIndex ?? 0,
-        initialFeatureCount,
-        this.buildState_.chunkCount ?? 0,
+    try {
+      if (this.buildState_) {
+        timings.renderedFeatures = this.buildState_.renderedFeatures;
+        timings.skippedFeatures = this.buildState_.skippedFeatures;
+        timings.lod = this.buildState_.lod;
+      } else {
+        timings.renderedFeatures = this.lastRenderedCount_;
+        timings.skippedFeatures = this.lastSkippedCount_;
+      }
+      if (this.buildState_) {
+        const initialFeatureCount =
+          this.buildState_.featureCount ?? this.buildState_.features?.length ?? 0;
+        this.setFrameBuildProgress_(
+          true,
+          this.buildState_.featureIndex ?? 0,
+          initialFeatureCount,
+          this.buildState_.chunkCount ?? 0,
+        );
+      } else {
+        this.setFrameBuildProgress_(false, 0, 0, 0);
+      }
+      if (
+        !frameState.layerTimingsTimestamp ||
+        frameState.layerTimingsTimestamp !== frameState.time
+      ) {
+        frameState.layerTimings = new Map();
+        frameState.layerTimingsTimestamp = frameState.time;
+      }
+
+      const vectorLayer = this.getLayer();
+      const vectorSource = vectorLayer.getSource();
+      if (!vectorSource) {
+        this.resetBuildState_();
+        if (sharedManager) {
+          sharedManager.invalidateParticipants(this);
+        }
+        return false;
+      }
+
+      const animating = frameState.viewHints[ViewHint.ANIMATING];
+      const interacting = frameState.viewHints[ViewHint.INTERACTING];
+      const updateWhileAnimating = vectorLayer.getUpdateWhileAnimating();
+      const updateWhileInteracting = vectorLayer.getUpdateWhileInteracting();
+
+      if (
+        (this.ready && !updateWhileAnimating && animating) ||
+        (!updateWhileInteracting && interacting)
+      ) {
+        this.animatingOrInteracting_ = true;
+        return true;
+      }
+      this.animatingOrInteracting_ = false;
+
+      const frameStateExtent = frameState.extent;
+      const viewState = frameState.viewState;
+      const projection = viewState.projection;
+      const resolution = viewState.resolution;
+      const pixelRatio = frameState.pixelRatio;
+      const vectorLayerRevision = vectorLayer.getRevision();
+      const vectorLayerRenderBuffer = vectorLayer.getRenderBuffer();
+      let vectorLayerRenderOrder = vectorLayer.getRenderOrder();
+
+      if (vectorLayerRenderOrder === undefined) {
+        vectorLayerRenderOrder = defaultRenderOrder;
+      }
+
+      const center = viewState.center.slice();
+      const extent = buffer(
+        frameStateExtent,
+        vectorLayerRenderBuffer * resolution,
       );
-    } else {
-      this.setFrameBuildProgress_(false, 0, 0, 0);
-    }
-    if (
-      !frameState.layerTimingsTimestamp ||
-      frameState.layerTimingsTimestamp !== frameState.time
-    ) {
-      frameState.layerTimings = new Map();
-      frameState.layerTimingsTimestamp = frameState.time;
-    }
+      const renderedExtent = extent.slice();
+      const loadExtents = [extent.slice()];
+      const projectionExtent = projection.getExtent();
 
-    const vectorLayer = this.getLayer();
-    const vectorSource = vectorLayer.getSource();
-    if (!vectorSource) {
-      this.resetBuildState_();
-      if (sharedManager) {
-        sharedManager.invalidateParticipants(this);
-      }
-      return false;
-    }
-
-    const animating = frameState.viewHints[ViewHint.ANIMATING];
-    const interacting = frameState.viewHints[ViewHint.INTERACTING];
-    const updateWhileAnimating = vectorLayer.getUpdateWhileAnimating();
-    const updateWhileInteracting = vectorLayer.getUpdateWhileInteracting();
-
-    if (
-      (this.ready && !updateWhileAnimating && animating) ||
-      (!updateWhileInteracting && interacting)
-    ) {
-      this.animatingOrInteracting_ = true;
-      return true;
-    }
-    this.animatingOrInteracting_ = false;
-
-    const frameStateExtent = frameState.extent;
-    const viewState = frameState.viewState;
-    const projection = viewState.projection;
-    const resolution = viewState.resolution;
-    const pixelRatio = frameState.pixelRatio;
-    const vectorLayerRevision = vectorLayer.getRevision();
-    const vectorLayerRenderBuffer = vectorLayer.getRenderBuffer();
-    let vectorLayerRenderOrder = vectorLayer.getRenderOrder();
-
-    if (vectorLayerRenderOrder === undefined) {
-      vectorLayerRenderOrder = defaultRenderOrder;
-    }
-
-    const center = viewState.center.slice();
-    const extent = buffer(
-      frameStateExtent,
-      vectorLayerRenderBuffer * resolution,
-    );
-    const renderedExtent = extent.slice();
-    const loadExtents = [extent.slice()];
-    const projectionExtent = projection.getExtent();
-
-    if (
-      vectorSource.getWrapX() &&
-      projection.canWrapX() &&
-      !containsExtent(projectionExtent, frameState.extent)
-    ) {
-      // For the replay group, we need an extent that intersects the real world
-      // (-180° to +180°). To support geometries in a coordinate range from -540°
-      // to +540°, we add at least 1 world width on each side of the projection
-      // extent. If the viewport is wider than the world, we need to add half of
-      // the viewport width to make sure we cover the whole viewport.
-      const worldWidth = getWidth(projectionExtent);
-      const gutter = Math.max(getWidth(extent) / 2, worldWidth);
-      extent[0] = projectionExtent[0] - gutter;
-      extent[2] = projectionExtent[2] + gutter;
-      wrapCoordinateX(center, projection);
-      const loadExtent = wrapExtentX(loadExtents[0], projection);
-      // If the extent crosses the date line, we load data for both edges of the worlds
       if (
-        loadExtent[0] < projectionExtent[0] &&
-        loadExtent[2] < projectionExtent[2]
+        vectorSource.getWrapX() &&
+        projection.canWrapX() &&
+        !containsExtent(projectionExtent, frameState.extent)
       ) {
-        loadExtents.push([
-          loadExtent[0] + worldWidth,
-          loadExtent[1],
-          loadExtent[2] + worldWidth,
-          loadExtent[3],
-        ]);
-      } else if (
-        loadExtent[0] > projectionExtent[0] &&
-        loadExtent[2] > projectionExtent[2]
-      ) {
-        loadExtents.push([
-          loadExtent[0] - worldWidth,
-          loadExtent[1],
-          loadExtent[2] - worldWidth,
-          loadExtent[3],
-        ]);
+        // For the replay group, we need an extent that intersects the real world
+        // (-180° to +180°). To support geometries in a coordinate range from -540°
+        // to +540°, we add at least 1 world width on each side of the projection
+        // extent. If the viewport is wider than the world, we need to add half of
+        // the viewport width to make sure we cover the whole viewport.
+        const worldWidth = getWidth(projectionExtent);
+        const gutter = Math.max(getWidth(extent) / 2, worldWidth);
+        extent[0] = projectionExtent[0] - gutter;
+        extent[2] = projectionExtent[2] + gutter;
+        wrapCoordinateX(center, projection);
+        const loadExtent = wrapExtentX(loadExtents[0], projection);
+        // If the extent crosses the date line, we load data for both edges of the worlds
+        if (
+          loadExtent[0] < projectionExtent[0] &&
+          loadExtent[2] < projectionExtent[2]
+        ) {
+          loadExtents.push([
+            loadExtent[0] + worldWidth,
+            loadExtent[1],
+            loadExtent[2] + worldWidth,
+            loadExtent[3],
+          ]);
+        } else if (
+          loadExtent[0] > projectionExtent[0] &&
+          loadExtent[2] > projectionExtent[2]
+        ) {
+          loadExtents.push([
+            loadExtent[0] - worldWidth,
+            loadExtent[1],
+            loadExtent[2] - worldWidth,
+            loadExtent[3],
+          ]);
+        }
       }
-    }
 
-    const existingBuildState = this.buildState_;
-    let resetReasons;
-    if (existingBuildState) {
-      resetReasons = [];
-      if (existingBuildState.revision !== vectorLayerRevision) {
-        resetReasons.push('revision');
+      const existingBuildState = this.buildState_;
+      let resetReasons;
+      if (existingBuildState) {
+        resetReasons = [];
+        if (existingBuildState.revision !== vectorLayerRevision) {
+          resetReasons.push('revision');
+        }
+        if (existingBuildState.renderOrder !== vectorLayerRenderOrder) {
+          resetReasons.push('renderOrder');
+        }
+        if (existingBuildState.pixelRatio !== pixelRatio) {
+          resetReasons.push('pixelRatio');
+        }
+        if (existingBuildState.resolution !== resolution) {
+          resetReasons.push('resolution');
+        }
+        if (existingBuildState.renderBuffer !== vectorLayerRenderBuffer) {
+          resetReasons.push('renderBuffer');
+        }
+        if (existingBuildState.declutter !== this.getLayer().getDeclutter()) {
+          resetReasons.push('declutter');
+        }
+        if (existingBuildState.rotation !== viewState.rotation) {
+          resetReasons.push('rotation');
+        }
+        if (
+          existingBuildState.center[0] !== center[0] ||
+          existingBuildState.center[1] !== center[1]
+        ) {
+          resetReasons.push('center');
+        }
       }
-      if (existingBuildState.renderOrder !== vectorLayerRenderOrder) {
-        resetReasons.push('renderOrder');
+      if (existingBuildState && resetReasons && resetReasons.length > 0) {
+        this.resetBuildState_();
+        if (sharedManager) {
+          sharedManager.invalidateParticipants(this);
+        }
+        timings.renderedFeatures = this.lastRenderedCount_;
+        timings.skippedFeatures = this.lastSkippedCount_;
+        timings.lod = 0;
       }
-      if (existingBuildState.pixelRatio !== pixelRatio) {
-        resetReasons.push('pixelRatio');
-      }
-      if (existingBuildState.resolution !== resolution) {
-        resetReasons.push('resolution');
-      }
-      if (existingBuildState.renderBuffer !== vectorLayerRenderBuffer) {
-        resetReasons.push('renderBuffer');
-      }
-      if (existingBuildState.declutter !== this.getLayer().getDeclutter()) {
-        resetReasons.push('declutter');
-      }
-      if (existingBuildState.rotation !== viewState.rotation) {
-        resetReasons.push('rotation');
-      }
+
       if (
-        existingBuildState.center[0] !== center[0] ||
-        existingBuildState.center[1] !== center[1]
+        !this.buildState_ &&
+        this.ready &&
+        this.renderedResolution_ == resolution &&
+        this.renderedRevision_ == vectorLayerRevision &&
+        this.renderedRenderOrder_ == vectorLayerRenderOrder &&
+        this.renderedFrameDeclutter_ === !!frameState.declutter &&
+        containsExtent(this.wrappedRenderedExtent_, extent)
       ) {
-        resetReasons.push('center');
+        if (!equals(this.renderedExtent_, renderedExtent)) {
+          this.hitDetectionImageData_ = null;
+          this.renderedExtent_ = renderedExtent;
+        }
+        this.renderedCenter_ = center;
+        this.replayGroupChanged = false;
+        this.updateLayerTimings_(frameState);
+        return true;
       }
-    }
-    if (existingBuildState && resetReasons && resetReasons.length > 0) {
-      this.resetBuildState_();
-      if (sharedManager) {
-        sharedManager.invalidateParticipants(this);
-      }
-      timings.renderedFeatures = this.lastRenderedCount_;
-      timings.skippedFeatures = this.lastSkippedCount_;
-      timings.lod = 0;
-    }
 
-    if (
-      !this.buildState_ &&
-      this.ready &&
-      this.renderedResolution_ == resolution &&
-      this.renderedRevision_ == vectorLayerRevision &&
-      this.renderedRenderOrder_ == vectorLayerRenderOrder &&
-      this.renderedFrameDeclutter_ === !!frameState.declutter &&
-      containsExtent(this.wrappedRenderedExtent_, extent)
-    ) {
-      if (!equals(this.renderedExtent_, renderedExtent)) {
-        this.hitDetectionImageData_ = null;
-        this.renderedExtent_ = renderedExtent;
+      let buildState = this.buildState_;
+      if (!buildState) {
+        const builderGroup = new CanvasBuilderGroup(
+          getRenderTolerance(resolution, pixelRatio),
+          extent,
+          resolution,
+          pixelRatio,
+        );
+
+        const userProjection = getUserProjection();
+        let userTransform;
+        if (userProjection) {
+          for (let i = 0, ii = loadExtents.length; i < ii; ++i) {
+            const loadExtent = loadExtents[i];
+            const userExtent = toUserExtent(loadExtent, projection);
+            vectorSource.loadFeatures(
+              userExtent,
+              toUserResolution(resolution, projection),
+              userProjection,
+            );
+          }
+          userTransform = getTransformFromProjections(userProjection, projection);
+        } else {
+          for (let i = 0, ii = loadExtents.length; i < ii; ++i) {
+            vectorSource.loadFeatures(loadExtents[i], resolution, projection);
+          }
+        }
+
+        const squaredTolerance = getSquaredRenderTolerance(resolution, pixelRatio);
+        const userExtent = toUserExtent(extent, projection);
+        const features = vectorSource.getFeaturesInExtent(userExtent);
+        if (vectorLayerRenderOrder) {
+          features.sort(vectorLayerRenderOrder);
+        }
+        this.renderedFeatures_ = features;
+
+        buildState = {
+          builderGroup,
+          center: center.slice(),
+          extent: extent.slice(),
+          renderedExtent: renderedExtent.slice(),
+          resolution,
+          pixelRatio,
+          renderBuffer: vectorLayerRenderBuffer,
+          revision: vectorLayerRevision,
+          renderOrder: vectorLayerRenderOrder,
+          declutter: this.getLayer().getDeclutter(),
+          squaredTolerance,
+          userTransform,
+          features,
+          featureCount: features.length,
+          featureIndex: 0,
+          ready: true,
+          renderedFeatures: 0,
+          skippedFeatures: 0,
+          lod: 0,
+          zoom: viewState.zoom,
+          rotation: viewState.rotation,
+          chunkCount: 0,
+        };
+        this.buildState_ = buildState;
+        timings.renderedFeatures = 0;
+        timings.skippedFeatures = 0;
+        timings.lod = 0;
+        this.ready = false;
+        this.setFrameBuildProgress_(true, 0, buildState.featureCount, 0);
+        if (sharedManager) {
+          sharedManager.invalidateParticipants(this);
+        }
+      } else {
+        timings.renderedFeatures = buildState.renderedFeatures;
+        timings.skippedFeatures = buildState.skippedFeatures;
+        timings.lod = buildState.lod;
+        if (buildState.featureCount === undefined) {
+          buildState.featureCount = buildState.features?.length ?? 0;
+        }
+        if (buildState.chunkCount === undefined) {
+          buildState.chunkCount = 0;
+        }
+        this.setFrameBuildProgress_(
+          true,
+          buildState.featureIndex ?? 0,
+          buildState.featureCount,
+          buildState.chunkCount,
+        );
       }
-      this.renderedCenter_ = center;
-      this.replayGroupChanged = false;
+
+      const builderGroup = buildState.builderGroup;
+      const features = buildState.features;
+      const squaredTolerance = buildState.squaredTolerance;
+      const userTransform = buildState.userTransform;
+      const declutter = buildState.declutter;
+      const chunkStart = now();
+      let ready = buildState.ready;
+      let index = buildState.featureIndex;
+      const featureCount = buildState.featureCount ?? features.length;
+      buildState.featureCount = featureCount;
+
+      while (index < featureCount) {
+        const feature = features[index];
+        let styles;
+        const styleFunction =
+          feature.getStyleFunction() || vectorLayer.getStyleFunction();
+        if (styleFunction) {
+          styles = styleFunction(feature, buildState.resolution);
+        }
+        if (styles) {
+          const dirty = this.renderFeature(
+            feature,
+            squaredTolerance,
+            styles,
+            builderGroup,
+            userTransform,
+            declutter,
+            index,
+            buildState.resolution,
+            buildState.zoom,
+          );
+          ready = ready && !dirty;
+        }
+        index += 1;
+      }
+
+      this.recordBuildDuration_(frameState, Math.max(0, now() - chunkStart));
+      buildState.featureIndex = index;
+      buildState.ready = ready;
+      buildState.renderedFeatures = timings.renderedFeatures;
+      buildState.skippedFeatures = timings.skippedFeatures;
+      buildState.lod = timings.lod;
+
+      const finalizeStart = now();
+      const replayGroupInstructions = builderGroup.finish();
+      this.recordBuildDuration_(frameState, Math.max(0, now() - finalizeStart));
+      const executorGroup = new ExecutorGroup(
+        buildState.extent,
+        buildState.resolution,
+        buildState.pixelRatio,
+        vectorSource.getOverlaps(),
+        replayGroupInstructions,
+        vectorLayer.getRenderBuffer(),
+        !!frameState.declutter,
+      );
+
+      this.renderedResolution_ = buildState.resolution;
+      this.renderedRevision_ = vectorLayerRevision;
+      this.renderedRenderOrder_ = vectorLayerRenderOrder;
+      this.renderedFrameDeclutter_ = !!frameState.declutter;
+      this.renderedExtent_ = buildState.renderedExtent;
+      this.wrappedRenderedExtent_ = buildState.extent;
+      this.renderedCenter_ = buildState.center;
+      this.renderedProjection_ = projection;
+      this.renderedPixelRatio_ = buildState.pixelRatio;
+      this.replayGroup_ = executorGroup;
+      this.hitDetectionImageData_ = null;
+
+      this.replayGroupChanged = true;
+      this.ready = ready;
+      this.lastRenderedCount_ = timings.renderedFeatures;
+      this.lastSkippedCount_ = timings.skippedFeatures;
+      this.setFrameBuildProgress_(
+        false,
+        featureCount,
+        featureCount,
+        buildState.chunkCount || 0,
+      );
+      this.resetBuildState_();
       this.updateLayerTimings_(frameState);
       return true;
+    } finally {
+      this.recordPrepareOverhead_(frameState, prepareStart, initialBuild);
     }
-
-    let buildState = this.buildState_;
-    if (!buildState) {
-      const builderGroup = new CanvasBuilderGroup(
-        getRenderTolerance(resolution, pixelRatio),
-        extent,
-        resolution,
-        pixelRatio,
-      );
-
-      const userProjection = getUserProjection();
-      let userTransform;
-      if (userProjection) {
-        for (let i = 0, ii = loadExtents.length; i < ii; ++i) {
-          const loadExtent = loadExtents[i];
-          const userExtent = toUserExtent(loadExtent, projection);
-          vectorSource.loadFeatures(
-            userExtent,
-            toUserResolution(resolution, projection),
-            userProjection,
-          );
-        }
-        userTransform = getTransformFromProjections(userProjection, projection);
-      } else {
-        for (let i = 0, ii = loadExtents.length; i < ii; ++i) {
-          vectorSource.loadFeatures(loadExtents[i], resolution, projection);
-        }
-      }
-
-      const squaredTolerance = getSquaredRenderTolerance(resolution, pixelRatio);
-      const userExtent = toUserExtent(extent, projection);
-      const features = vectorSource.getFeaturesInExtent(userExtent);
-      if (vectorLayerRenderOrder) {
-        features.sort(vectorLayerRenderOrder);
-      }
-      this.renderedFeatures_ = features;
-
-      buildState = {
-        builderGroup,
-        center: center.slice(),
-        extent: extent.slice(),
-        renderedExtent: renderedExtent.slice(),
-        resolution,
-        pixelRatio,
-        renderBuffer: vectorLayerRenderBuffer,
-        revision: vectorLayerRevision,
-        renderOrder: vectorLayerRenderOrder,
-        declutter: this.getLayer().getDeclutter(),
-        squaredTolerance,
-        userTransform,
-        features,
-        featureCount: features.length,
-        featureIndex: 0,
-        ready: true,
-        renderedFeatures: 0,
-        skippedFeatures: 0,
-        lod: 0,
-        zoom: viewState.zoom,
-        rotation: viewState.rotation,
-        chunkCount: 0,
-      };
-      this.buildState_ = buildState;
-      timings.renderedFeatures = 0;
-      timings.skippedFeatures = 0;
-      timings.lod = 0;
-      this.ready = false;
-      this.setFrameBuildProgress_(true, 0, buildState.featureCount, 0);
-      if (sharedManager) {
-        sharedManager.invalidateParticipants(this);
-      }
-    } else {
-      timings.renderedFeatures = buildState.renderedFeatures;
-      timings.skippedFeatures = buildState.skippedFeatures;
-      timings.lod = buildState.lod;
-      if (buildState.featureCount === undefined) {
-        buildState.featureCount = buildState.features?.length ?? 0;
-      }
-      if (buildState.chunkCount === undefined) {
-        buildState.chunkCount = 0;
-      }
-      this.setFrameBuildProgress_(
-        true,
-        buildState.featureIndex ?? 0,
-        buildState.featureCount,
-        buildState.chunkCount,
-      );
-    }
-
-    const builderGroup = buildState.builderGroup;
-    const features = buildState.features;
-    const squaredTolerance = buildState.squaredTolerance;
-    const userTransform = buildState.userTransform;
-    const declutter = buildState.declutter;
-    const chunkStart = now();
-    let ready = buildState.ready;
-    let index = buildState.featureIndex;
-    const featureCount = buildState.featureCount ?? features.length;
-    buildState.featureCount = featureCount;
-
-    while (index < featureCount) {
-      const feature = features[index];
-      let styles;
-      const styleFunction =
-        feature.getStyleFunction() || vectorLayer.getStyleFunction();
-      if (styleFunction) {
-        styles = styleFunction(feature, buildState.resolution);
-      }
-      if (styles) {
-        const dirty = this.renderFeature(
-          feature,
-          squaredTolerance,
-          styles,
-          builderGroup,
-          userTransform,
-          declutter,
-          index,
-          buildState.resolution,
-          buildState.zoom,
-        );
-        ready = ready && !dirty;
-      }
-      index += 1;
-    }
-
-    this.recordBuildDuration_(frameState, Math.max(0, now() - chunkStart));
-    buildState.featureIndex = index;
-    buildState.ready = ready;
-    buildState.renderedFeatures = timings.renderedFeatures;
-    buildState.skippedFeatures = timings.skippedFeatures;
-    buildState.lod = timings.lod;
-
-    const finalizeStart = now();
-    const replayGroupInstructions = builderGroup.finish();
-    this.recordBuildDuration_(frameState, Math.max(0, now() - finalizeStart));
-    const executorGroup = new ExecutorGroup(
-      buildState.extent,
-      buildState.resolution,
-      buildState.pixelRatio,
-      vectorSource.getOverlaps(),
-      replayGroupInstructions,
-      vectorLayer.getRenderBuffer(),
-      !!frameState.declutter,
-    );
-
-    this.renderedResolution_ = buildState.resolution;
-    this.renderedRevision_ = vectorLayerRevision;
-    this.renderedRenderOrder_ = vectorLayerRenderOrder;
-    this.renderedFrameDeclutter_ = !!frameState.declutter;
-    this.renderedExtent_ = buildState.renderedExtent;
-    this.wrappedRenderedExtent_ = buildState.extent;
-    this.renderedCenter_ = buildState.center;
-    this.renderedProjection_ = projection;
-    this.renderedPixelRatio_ = buildState.pixelRatio;
-    this.replayGroup_ = executorGroup;
-    this.hitDetectionImageData_ = null;
-
-    this.replayGroupChanged = true;
-    this.ready = ready;
-    this.lastRenderedCount_ = timings.renderedFeatures;
-    this.lastSkippedCount_ = timings.skippedFeatures;
-    this.setFrameBuildProgress_(
-      false,
-      featureCount,
-      featureCount,
-      buildState.chunkCount || 0,
-    );
-    this.resetBuildState_();
-    this.updateLayerTimings_(frameState);
-    return true;
   }
-
   /**
    * @param {import("../../Feature.js").default} feature Feature.
    * @param {number} squaredTolerance Squared render tolerance.

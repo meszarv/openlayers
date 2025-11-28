@@ -232,6 +232,10 @@ map.on('postrender', (event) => {
   let build = 0;
   let draw = 0;
   let lod = 0;
+  let prepare = 0;
+  let setup = 0;
+  let preRender = 0;
+  let postRender = 0;
   let rendered = 0;
   let skipped = 0;
   let total = 0;
@@ -244,6 +248,10 @@ map.on('postrender', (event) => {
     build += timings.build ?? 0;
     draw += timings.draw ?? 0;
     lod += timings.lod ?? 0;
+    prepare += timings.prepare ?? 0;
+    setup += timings.setup ?? 0;
+    preRender += timings.preRender ?? 0;
+    postRender += timings.postRender ?? 0;
     rendered += timings.renderedFeatures ?? 0;
     skipped += timings.skippedFeatures ?? 0;
     total += timings.total ?? 0;
@@ -271,6 +279,10 @@ map.on('postrender', (event) => {
     zoom,
     fps,
     layerCount: vectorLayers.length,
+    prepare,
+    setup,
+    preRender,
+    postRender,
   };
   frameHistory.push(entry);
   if (frameHistory.length > 120) {
@@ -285,7 +297,7 @@ map.on('postrender', (event) => {
     .reverse()
     .map((item) => {
       const label = `#${String(item.index).padStart(5, ' ')}`;
-      return `${label} | Layers: ${item.layerCount} | Zoom: ${formatZoom(item.zoom)} | Build: ${format(item.build)} ms | Draw: ${format(item.draw)} ms | LOD: ${format(item.lod)} ms | Total: ${format(item.total)} ms | Rendered: ${formatCount(item.rendered)} | Skipped: ${formatCount(item.skipped)} | FPS: ${formatFps(item.fps)}`;
+      return `${label} | Layers: ${item.layerCount} | Zoom: ${formatZoom(item.zoom)} | Build: ${format(item.build)} ms | Draw: ${format(item.draw)} ms | LOD: ${format(item.lod)} ms | Prepare: ${format(item.prepare)} ms | Setup: ${format(item.setup)} ms | PreRender: ${format(item.preRender)} ms | Post: ${format(item.postRender)} ms | Total: ${format(item.total)} ms | Rendered: ${formatCount(item.rendered)} | Skipped: ${formatCount(item.skipped)} | FPS: ${formatFps(item.fps)}`;
     });
   renderStatsElement.textContent = lines.join(`
 `);
