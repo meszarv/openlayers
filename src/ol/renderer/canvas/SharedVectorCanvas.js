@@ -611,13 +611,11 @@ class SharedVectorCanvas {
       const candidateRenderer = layer?.getRenderer
         ? layer.getRenderer()
         : null;
-      if (
-        candidateRenderer &&
-        typeof candidateRenderer.invalidateSharedDrawStates === 'function'
-      ) {
+      if (candidateRenderer && typeof candidateRenderer.invalidateSharedDrawStates === 'function') {
         candidateRenderer.invalidateSharedDrawStates();
       }
     }
+    this.bumpContextEpoch('participant-invalidated');
   }
 
   /**

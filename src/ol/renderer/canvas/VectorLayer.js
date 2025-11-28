@@ -755,7 +755,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       ) ||
         drawState.declutterTree === declutterTreeRef);
 
-    const needsReset =
+    let needsReset =
       !drawState ||
       drawState.executorGroup !== executorGroup ||
       drawState.context !== context ||
@@ -772,6 +772,13 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       drawState.declutterable !== declutterable ||
       drawState.builderTypes !== builderTypes ||
       !declutterTreeMatches;
+
+    if (drawState && sharedManager) {
+      const managerEpoch = sharedManager.getContextEpoch();
+      if (drawState.sharedEpoch !== managerEpoch) {
+        needsReset = true;
+      }
+    }
 
     if (needsReset) {
       let resetReasons;
@@ -864,13 +871,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         drawState.needsClear = true;
       }
       drawState.declutterTree = declutterTreeRef ?? undefined;
-    }
-
-    if (drawState && sharedManager) {
-      const managerEpoch = sharedManager.getContextEpoch();
-      if (drawState.sharedEpoch !== managerEpoch) {
-        drawState.completed = false;
-      }
     }
 
     if (drawState && drawState.completed) {
