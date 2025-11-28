@@ -44,6 +44,7 @@ import {
 } from '../vector.js';
 import CanvasLayerRenderer, {canvasPool} from './Layer.js';
 import SharedVectorCanvas, {createEventContextEntry} from './SharedVectorCanvas.js';
+import VectorLayerTiming from './VectorLayerTiming.js';
 
 const now =
   typeof performance !== 'undefined' && performance.now
@@ -111,29 +112,6 @@ function ensureBuildOverlayStyle() {
     }
   `;
   document.head.appendChild(style);
-}
-
-function createFrameTimings() {
-  const start = now();
-  return {
-    buildStart: start,
-    build: 0,
-    draw: 0,
-    lod: 0,
-    prepare: 0,
-    setup: 0,
-    preRender: 0,
-    postRender: 0,
-    renderedFeatures: 0,
-    skippedFeatures: 0,
-    totalStart: start,
-    total: 0,
-    buildPending: false,
-    buildProgress: 1,
-    buildProcessedFeatures: 0,
-    buildTotalFeatures: 0,
-    buildChunkCount: 0,
-  };
 }
 
 function computeImageChunkEnd(instructions, start, targetDrawInstructions) {
@@ -334,10 +312,11 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     this.lastSkippedCount_ = 0;
 
     /**
+     * Tracks per-frame timing buckets for diagnostics.
      * @private
-     * @type {{buildStart:number, build:number, draw:number, lod:number, renderedFeatures:number, skippedFeatures:number, totalStart:number, total:number}|null}
+     * @type {VectorLayerTiming}
      */
-    this.frameTimings_ = null;
+    this.timingHelper_ = new VectorLayerTiming(this, now);
 
     /**
      * @private
@@ -443,6 +422,35 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     }
     const uid = getUid(this.getLayer());
     return lookup.get(uid) ?? null;
+  }
+
+  /**
+   * Resolve the shared canvas context info for this frame.
+   * @param {import("../../Map.js").FrameState} frameState Frame state.
+   * @param {import("../../layer/Layer.js").State} layerState Layer state.
+   * @param {boolean} allowDeferred Whether shared draws can be deferred.
+   * @return {{manager: SharedVectorCanvas, isHost: boolean, defer: boolean}}
+   * @private
+   */
+  getSharedContextInfo_(frameState, layerState, allowDeferred) {
+    const sharedGroup = frameState ? this.getSharedGroup_(frameState) : null;
+    if (sharedGroup && sharedGroup.manager) {
+      return {
+        manager: sharedGroup.manager,
+        isHost: sharedGroup.renderer === this,
+        defer: !!allowDeferred,
+      };
+    }
+    const fallbackManager = this.getSharedCanvasManager();
+    fallbackManager.reset(
+      frameState,
+      layerState ? [layerState] : undefined,
+    );
+    return {
+      manager: fallbackManager,
+      isHost: true,
+      defer: false,
+    };
   }
 
   /**
@@ -658,7 +666,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     usingSharedSurface = false,
     sharedManager = null,
   ) {
-    const timings = this.frameTimings_;
+    const timings = this.timingHelper_.getTimings();
     const sharedBudgetLimit =
       this.sharedDrawBudgetMs_ !== null ? this.sharedDrawBudgetMs_ : null;
     this.sharedDrawBudgetMs_ = null;
@@ -867,10 +875,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
 
     if (drawState && drawState.completed) {
       if (measureTime) {
-        this.recordDrawDuration_(
-          frameState,
-          Math.max(0, now() - drawStart),
-        );
+        this.recordDrawPhase_(frameState, drawStart);
       }
       executorGroup.renderedContext_ = drawState.context;
       return;
@@ -879,10 +884,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     if (skipThisFrame) {
       frameState.animate = true;
       if (measureTime) {
-        this.recordDrawDuration_(
-          frameState,
-          Math.max(0, now() - drawStart),
-        );
+        this.recordDrawPhase_(frameState, drawStart);
       }
       if (drawState) {
         executorGroup.renderedContext_ = drawState.context;
@@ -896,10 +898,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         drawState.needsClear = false;
       }
       if (measureTime) {
-        this.recordDrawDuration_(
-          frameState,
-          Math.max(0, now() - drawStart),
-        );
+        this.recordDrawPhase_(frameState, drawStart);
       }
       if (drawState) {
         executorGroup.renderedContext_ = drawState.context;
@@ -1108,10 +1107,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
           const currentTime = now();
           if (timings && currentTime >= budgetDeadline) {
             frameState.animate = true;
-            this.recordDrawDuration_(
-              frameState,
-              Math.max(0, currentTime - drawStart),
-            );
+            this.recordDrawPhase_(frameState, drawStart, currentTime);
             executorGroup.renderedContext_ = drawState.context;
             return;
           }
@@ -1135,100 +1131,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     drawState.needsClear = false;
 
     if (measureTime) {
-      const drawDuration = Math.max(0, now() - drawStart);
-      this.recordDrawDuration_(frameState, drawDuration);
-    }
-  }
-
-  /**
-   * @private
-   * @param {import("../../Map.js").FrameState} frameState Frame state.
-   * @param {number} duration Duration in milliseconds.
-   */
-  recordDrawDuration_(frameState, duration) {
-    if (!duration) {
-      return;
-    }
-    if (this.frameTimings_) {
-      this.frameTimings_.draw += duration;
-      this.updateLayerTimings_(frameState);
-    }
-    frameState?.frameBudget?.consumeDrawTime(duration);
-  }
-
-  /**
-   * @private
-   * @param {import("../../Map.js").FrameState} frameState Frame state.
-   * @param {number} duration Duration in milliseconds.
-   */
-  recordBuildDuration_(frameState, duration) {
-    if (!duration) {
-      return;
-    }
-    if (this.frameTimings_) {
-      this.frameTimings_.build += duration;
-      this.updateLayerTimings_(frameState);
-    }
-  }
-
-  /**
-   * @private
-   * @param {import("../../Map.js").FrameState} frameState Frame state.
-   * @param {number} duration Duration in milliseconds.
-   */
-  recordSetupDuration_(frameState, duration) {
-    if (!duration || !this.frameTimings_) {
-      return;
-    }
-    this.frameTimings_.setup += duration;
-    this.updateLayerTimings_(frameState);
-  }
-
-  /**
-   * @private
-   * @param {import("../../Map.js").FrameState} frameState Frame state.
-   * @param {number} duration Duration in milliseconds.
-   */
-  recordPreRenderDuration_(frameState, duration) {
-    if (!duration || !this.frameTimings_) {
-      return;
-    }
-    this.frameTimings_.preRender += duration;
-    this.updateLayerTimings_(frameState);
-  }
-
-  /**
-   * @private
-   * @param {import("../../Map.js").FrameState} frameState Frame state.
-   * @param {number} duration Duration in milliseconds.
-   */
-  recordPostRenderDuration_(frameState, duration) {
-    if (!duration || !this.frameTimings_) {
-      return;
-    }
-    this.frameTimings_.postRender += duration;
-    this.updateLayerTimings_(frameState);
-  }
-
-  /**
-   * @private
-   * @param {import("../../Map.js").FrameState} frameState Frame state.
-   * @param {number} startTime Start timestamp.
-   * @param {number} initialBuild Build duration before prepare work.
-   */
-  recordPrepareOverhead_(frameState, startTime, initialBuild) {
-    if (!this.frameTimings_ || !isFinite(startTime)) {
-      return;
-    }
-    const totalDuration = Math.max(0, now() - startTime);
-    const buildDelta = Math.max(
-      0,
-      this.frameTimings_.build - (initialBuild || 0),
-    );
-    const overhead = Math.max(0, totalDuration - buildDelta);
-    if (overhead) {
-      this.frameTimings_.prepare += overhead;
-      this.updateLayerTimings_(frameState);
+      this.recordDrawPhase_(frameState, drawStart);
     }
   }
 
@@ -1336,29 +1239,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
   }
 
   /**
-   * @private
-   * @param {boolean} pending Build is still running.
-   * @param {number} processed Features processed so far.
-   * @param {number} total Total features to process.
-   * @param {number} chunkCount Number of build chunks executed.
-   */
-  setFrameBuildProgress_(pending, processed, total, chunkCount) {
-    if (!this.frameTimings_) {
-      return;
-    }
-    const safeTotal = Math.max(0, total || 0);
-    const safeProcessedRaw = Math.max(0, processed || 0);
-    const safeProcessed =
-      safeTotal > 0 ? Math.min(safeProcessedRaw, safeTotal) : safeProcessedRaw;
-    const progress = safeTotal > 0 ? safeProcessed / safeTotal : pending ? 0 : 1;
-    this.frameTimings_.buildPending = pending;
-    this.frameTimings_.buildProcessedFeatures = safeProcessed;
-    this.frameTimings_.buildTotalFeatures = safeTotal;
-    this.frameTimings_.buildProgress = Math.max(0, Math.min(1, progress));
-    this.frameTimings_.buildChunkCount = Math.max(0, chunkCount || 0);
-  }
-
-  /**
    * Ensure a DOM overlay exists for rendering build progress.
    * @private
    * @param {import("../../Map.js").default|null} map Owning map.
@@ -1457,7 +1337,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     if (typeof document === 'undefined') {
       return;
     }
-    const timings = this.frameTimings_;
+    const timings = this.timingHelper_.getTimings();
     const map = this.getLayer().getMapInternal();
     const show =
       !!timings &&
@@ -1490,51 +1370,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     }
 
     overlay.classList.add('visible');
-  }
-
-  /**
-   * @private
-   * @param {import("../../Map.js").FrameState} frameState Frame state.
-   */
-  updateLayerTimings_(frameState) {
-    if (!this.frameTimings_) {
-      return;
-    }
-    const phaseTotal =
-      this.frameTimings_.build +
-      this.frameTimings_.draw +
-      this.frameTimings_.lod +
-      this.frameTimings_.prepare +
-      this.frameTimings_.setup +
-      this.frameTimings_.preRender +
-      this.frameTimings_.postRender;
-    this.frameTimings_.total = phaseTotal;
-    if (
-      !frameState.layerTimings ||
-      frameState.layerTimingsTimestamp !== frameState.time
-    ) {
-      frameState.layerTimings = new Map();
-      frameState.layerTimingsTimestamp = frameState.time;
-    }
-    const map = frameState.layerTimings;
-    const layerUid = getUid(this.getLayer());
-      map.set(layerUid, {
-        build: this.frameTimings_.build,
-        draw: this.frameTimings_.draw,
-        lod: this.frameTimings_.lod,
-        prepare: this.frameTimings_.prepare,
-        setup: this.frameTimings_.setup,
-        preRender: this.frameTimings_.preRender,
-        postRender: this.frameTimings_.postRender,
-        renderedFeatures: this.frameTimings_.renderedFeatures,
-        skippedFeatures: this.frameTimings_.skippedFeatures,
-        total: this.frameTimings_.total,
-        buildPending: this.frameTimings_.buildPending,
-        buildProgress: this.frameTimings_.buildProgress,
-      buildProcessedFeatures: this.frameTimings_.buildProcessedFeatures,
-      buildTotalFeatures: this.frameTimings_.buildTotalFeatures,
-      buildChunkCount: this.frameTimings_.buildChunkCount,
-    });
   }
 
   /**
@@ -1633,7 +1468,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       const stop = endTime !== undefined ? endTime : now();
       const duration = Math.max(0, stop - setupStart);
       if (duration) {
-        this.recordSetupDuration_(frameState, duration);
+        this.timingHelper_.recordSetup(frameState, duration);
       }
       setupRecorded = true;
     };
@@ -1641,23 +1476,18 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     this.opacity_ = layerState.opacity;
     const viewState = frameState.viewState;
 
-    const sharedGroup = this.getSharedGroup_(frameState);
-    const sharedManager = sharedGroup ? sharedGroup.manager : null;
-    const sharedHost = sharedGroup ? sharedGroup.renderer : null;
-    const participatesInShared = !!sharedManager;
-    const isSharedHost = participatesInShared && sharedHost === this;
+    const {
+      manager: sharedManager,
+      isHost: isSharedHost,
+      defer,
+    } = this.getSharedContextInfo_(frameState, layerState, true);
 
-    let sharedAttached = false;
-    if (participatesInShared) {
-      sharedAttached = this.attachSharedCanvas_(
-        sharedManager,
-        isSharedHost,
-        frameState,
-        isSharedHost ? target : null,
-      );
-    } else {
-      this.prepareContainer(frameState, target);
-    }
+    let sharedAttached = this.attachSharedCanvas_(
+      sharedManager,
+      isSharedHost,
+      frameState,
+      isSharedHost ? target : null,
+    );
     const hostContext = this.context;
 
     const replayGroup = this.replayGroup_;
@@ -1666,7 +1496,11 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       const hasRenderListeners =
         this.getLayer().hasListener(RenderEventType.PRERENDER) ||
         this.getLayer().hasListener(RenderEventType.POSTRENDER);
-      if (!hasRenderListeners && !participatesInShared) {
+      if (!hasRenderListeners) {
+        if (sharedAttached) {
+          sharedManager.detachLayer(this);
+          sharedAttached = false;
+        }
         recordSetupDuration();
         return null;
       }
@@ -1678,20 +1512,21 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     const eventContext = this.getRenderEventContext_(
       frameContext,
       hostContext,
-      participatesInShared ? sharedManager : null,
+      sharedManager,
     );
 
     const preRenderStart = now();
     recordSetupDuration(preRenderStart);
     this.preRender(eventContext, frameState);
-    this.recordPreRenderDuration_(frameState, Math.max(0, now() - preRenderStart));
+    this.timingHelper_.recordPreRender(
+      frameState,
+      Math.max(0, now() - preRenderStart),
+    );
 
     const executeDraw = () => {
       let sharedDrawStarted = false;
-      if (participatesInShared && sharedManager) {
-        sharedManager.beginDraw(this);
-        sharedDrawStarted = true;
-      }
+      sharedManager.beginDraw(this);
+      sharedDrawStarted = true;
       let completed = false;
       let threw = true;
       try {
@@ -1717,8 +1552,8 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
             replayGroup,
             frameState,
             this.getLayer().getDeclutter() ? false : undefined,
-            participatesInShared,
-            participatesInShared ? sharedManager : null,
+            true,
+            sharedManager,
           );
           this.context = previousContext;
           this.drawContextDirty_ = true;
@@ -1739,7 +1574,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         if (!frameState.declutter) {
           this.resetDrawContext_();
         }
-        this.recordPostRenderDuration_(
+        this.timingHelper_.recordPostRender(
           frameState,
           Math.max(0, now() - postRenderStart),
         );
@@ -1754,19 +1589,15 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     };
 
     const outputElement =
-      participatesInShared && sharedManager
-        ? sharedManager.getContainer() || this.container
-        : this.container;
+      sharedManager.getContainer() || this.container;
 
-    if (participatesInShared) {
-      if (this.enqueueSharedDraw_(frameState, executeDraw, sharedManager)) {
-        recordSetupDuration();
-        return outputElement;
-      }
+    if (defer && this.enqueueSharedDraw_(frameState, executeDraw, sharedManager)) {
+      recordSetupDuration();
+      return outputElement;
     }
 
     const completed = executeDraw();
-    if (participatesInShared && sharedAttached && sharedManager) {
+    if (sharedAttached && sharedManager) {
       sharedManager.detachLayer(this);
       sharedAttached = false;
     }
@@ -1932,8 +1763,12 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
    * @override
   */
   prepareFrame(frameState) {
-    const timings = createFrameTimings();
-    this.frameTimings_ = timings;
+    const timings = this.timingHelper_.beginFrame();
+    this.timingHelper_.seedCounts(
+      this.buildState_,
+      this.lastRenderedCount_,
+      this.lastSkippedCount_,
+    );
     const prepareStart = now();
     const initialBuild = timings.build;
     let sharedManager = null;
@@ -1943,31 +1778,17 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     }
     try {
       if (this.buildState_) {
-        timings.renderedFeatures = this.buildState_.renderedFeatures;
-        timings.skippedFeatures = this.buildState_.skippedFeatures;
-        timings.lod = this.buildState_.lod;
-      } else {
-        timings.renderedFeatures = this.lastRenderedCount_;
-        timings.skippedFeatures = this.lastSkippedCount_;
-      }
-      if (this.buildState_) {
         const initialFeatureCount =
           this.buildState_.featureCount ?? this.buildState_.features?.length ?? 0;
-        this.setFrameBuildProgress_(
+        this.timingHelper_.setBuildProgress(
+          frameState,
           true,
           this.buildState_.featureIndex ?? 0,
           initialFeatureCount,
           this.buildState_.chunkCount ?? 0,
         );
       } else {
-        this.setFrameBuildProgress_(false, 0, 0, 0);
-      }
-      if (
-        !frameState.layerTimingsTimestamp ||
-        frameState.layerTimingsTimestamp !== frameState.time
-      ) {
-        frameState.layerTimings = new Map();
-        frameState.layerTimingsTimestamp = frameState.time;
+        this.timingHelper_.setBuildProgress(frameState, false, 0, 0, 0);
       }
 
       const vectorLayer = this.getLayer();
@@ -2113,7 +1934,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         }
         this.renderedCenter_ = center;
         this.replayGroupChanged = false;
-        this.updateLayerTimings_(frameState);
+        this.timingHelper_.updateLayerTimings(frameState);
         return true;
       }
 
@@ -2182,7 +2003,13 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         timings.skippedFeatures = 0;
         timings.lod = 0;
         this.ready = false;
-        this.setFrameBuildProgress_(true, 0, buildState.featureCount, 0);
+        this.timingHelper_.setBuildProgress(
+          frameState,
+          true,
+          0,
+          buildState.featureCount,
+          0,
+        );
         if (sharedManager) {
           sharedManager.invalidateParticipants(this);
         }
@@ -2196,7 +2023,8 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         if (buildState.chunkCount === undefined) {
           buildState.chunkCount = 0;
         }
-        this.setFrameBuildProgress_(
+        this.timingHelper_.setBuildProgress(
+          frameState,
           true,
           buildState.featureIndex ?? 0,
           buildState.featureCount,
@@ -2240,7 +2068,10 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         index += 1;
       }
 
-      this.recordBuildDuration_(frameState, Math.max(0, now() - chunkStart));
+      this.timingHelper_.recordBuild(
+        frameState,
+        Math.max(0, now() - chunkStart),
+      );
       buildState.featureIndex = index;
       buildState.ready = ready;
       buildState.renderedFeatures = timings.renderedFeatures;
@@ -2249,7 +2080,10 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
 
       const finalizeStart = now();
       const replayGroupInstructions = builderGroup.finish();
-      this.recordBuildDuration_(frameState, Math.max(0, now() - finalizeStart));
+      this.timingHelper_.recordBuild(
+        frameState,
+        Math.max(0, now() - finalizeStart),
+      );
       const executorGroup = new ExecutorGroup(
         buildState.extent,
         buildState.resolution,
@@ -2276,17 +2110,22 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       this.ready = ready;
       this.lastRenderedCount_ = timings.renderedFeatures;
       this.lastSkippedCount_ = timings.skippedFeatures;
-      this.setFrameBuildProgress_(
+      this.timingHelper_.setBuildProgress(
+        frameState,
         false,
         featureCount,
         featureCount,
         buildState.chunkCount || 0,
       );
       this.resetBuildState_();
-      this.updateLayerTimings_(frameState);
+      this.timingHelper_.updateLayerTimings(frameState);
       return true;
     } finally {
-      this.recordPrepareOverhead_(frameState, prepareStart, initialBuild);
+      this.timingHelper_.recordPrepareOverhead(
+        frameState,
+        prepareStart,
+        initialBuild,
+      );
     }
   }
   /**
@@ -2330,7 +2169,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
             index,
             resolution,
             zoom,
-            this.frameTimings_,
+            this.timingHelper_.getTimings(),
           ) || loading;
       }
     } else {
@@ -2345,11 +2184,27 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         index,
         resolution,
         zoom,
-        this.frameTimings_,
+        this.timingHelper_.getTimings(),
       );
     }
     return loading;
   }
+  /***
+   * @private
+   * @param {import("../../Map.js").FrameState} frameState Frame state.
+   * @param {number} startTime Draw start timestamp.
+   * @param {number} [stopTime] Optional stop timestamp.
+   */
+  recordDrawPhase_(frameState, startTime, stopTime) {
+    const end = stopTime !== undefined ? stopTime : now();
+    const duration = Math.max(0, end - startTime);
+    if (!duration) {
+      return;
+    }
+    this.timingHelper_.recordDraw(frameState, duration);
+    frameState?.frameBudget?.consumeDrawTime(duration);
+  }
+
 }
 
 export default CanvasVectorLayerRenderer;
