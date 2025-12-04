@@ -69,6 +69,7 @@ export default {
         {from: 'resources', to: 'resources'},
         {from: 'index.html', to: 'index.html'},
         {from: 'index.js', to: 'index.js'},
+        {from: '../../public/vex', to: 'vex'},
       ],
     }),
   ],

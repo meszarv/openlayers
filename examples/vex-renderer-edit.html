@@ -18,6 +18,9 @@ tags: "vector,experimental"
   <button id="zoom-features">Zoom to highlighted blocks</button>
   <button id="add-features">Add random plazas</button>
   <button id="clear-layer">Clear vector layer</button>
+  <p id="renderer-debug" class="renderer-status status">
+    Renderer: pending...
+  </p>
 </div>
 <section class="city-controls">
   <h3>Generate Synthetic Districts</h3>
@@ -31,6 +34,35 @@ tags: "vector,experimental"
     Extend range up to 200 areas
   </label>
   <p id="generation-status" class="status">Ready to generate synthetic districts.</p>
+  <button id="recolor-cities" type="button" class="palette-button">
+    Recolor synthetic districts
+  </button>
+</section>
+<section class="editing-controls">
+  <h3>Editing Playground</h3>
+  <label class="editing-toggle">
+    <input type="checkbox" id="editing-enabled" checked />
+    Enable select / modify / translate / snap interactions
+  </label>
+  <div class="editing-actions">
+    <label for="draw-type" class="visually-hidden">Draw mode</label>
+    <select id="draw-type">
+      <option value="none">Disable drawing</option>
+      <option value="Point">Draw points</option>
+      <option value="LineString">Draw lines</option>
+      <option value="Polygon" selected>Draw polygons</option>
+      <option value="Circle">Draw circles</option>
+    </select>
+    <button id="delete-selection" type="button">Delete selected</button>
+    <label for="interaction-mode" class="visually-hidden">Interaction mode</label>
+    <select id="interaction-mode" class="mode-select">
+      <option value="view">View mode (pan)</option>
+      <option value="select" selected>Edit mode (drag selection)</option>
+    </select>
+  </div>
+  <p id="editing-status" class="editing-status">
+    Editing interactions are ready. Select features to translate or drag their vertices.
+  </p>
 </section>
 <div class="vex-note">
   <p>

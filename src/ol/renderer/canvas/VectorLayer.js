@@ -22,11 +22,6 @@ import {
   toUserResolution,
 } from '../../proj.js';
 import RenderEventType from '../../render/EventType.js';
-import {
-  DEFAULT_BUILD_TIME_BUDGET_MS,
-  DEFAULT_DRAW_TIME_BUDGET_MS,
-  DEFAULT_FRAME_TIME_BUDGET_MS,
-} from '../../render/FrameBudget.js';
 import CanvasBuilderGroup from '../../render/canvas/BuilderGroup.js';
 import ExecutorGroup, {
   ALL,
@@ -53,9 +48,9 @@ const now =
     ? () => performance.now()
     : () => Date.now();
 
-const FRAME_TIME_BUDGET_MS = DEFAULT_FRAME_TIME_BUDGET_MS;
-const BUILD_TIME_BUDGET_MS = DEFAULT_BUILD_TIME_BUDGET_MS;
-const DRAW_TIME_BUDGET_MS = DEFAULT_DRAW_TIME_BUDGET_MS;
+const FRAME_TIME_BUDGET_MS = 40;
+const BUILD_TIME_BUDGET_MS = FRAME_TIME_BUDGET_MS / 2;
+const DRAW_TIME_BUDGET_MS = FRAME_TIME_BUDGET_MS - BUILD_TIME_BUDGET_MS;
 const CHUNKED_BUILDER_TYPES = new Set(['Image']);
 const INITIAL_DRAW_IMAGE_CHUNK_INSTRUCTIONS = 32;
 const MIN_DRAW_IMAGE_CHUNK_INSTRUCTIONS = 8;
@@ -438,17 +433,10 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
    */
   renderWorlds(executorGroup, frameState, declutterable) {
     const timings = this.frameTimings_;
-    const frameBudget = frameState.frameBudget ?? null;
-    const measureTime = !!(timings || frameBudget);
-    const drawStart = now();
-    let remainingBudget;
-    if (frameBudget) {
-      remainingBudget = frameBudget.getRemainingDrawBudget();
-    } else if (timings) {
-      remainingBudget = Math.max(0, DRAW_TIME_BUDGET_MS - timings.draw);
-    } else {
-      remainingBudget = DRAW_TIME_BUDGET_MS;
-    }
+    const drawStart = timings ? now() : 0;
+    const remainingBudget = timings
+      ? Math.max(0, DRAW_TIME_BUDGET_MS - timings.draw)
+      : DRAW_TIME_BUDGET_MS;
 
     const skipThisFrame = remainingBudget <= 0;
 
@@ -510,11 +498,9 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       !isInteractingFrame;
     if (buildingNewExecutor) {
       frameState.animate = true;
-      if (measureTime) {
-        this.recordDrawDuration_(
-          frameState,
-          Math.max(0, now() - drawStart),
-        );
+      if (timings) {
+        timings.draw += Math.max(0, now() - drawStart);
+        this.updateLayerTimings_(frameState);
       }
       if (drawState) {
         executorGroup.renderedContext_ = drawState.context;
@@ -685,11 +671,9 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     }
 
     if (drawState && drawState.completed) {
-      if (measureTime) {
-        this.recordDrawDuration_(
-          frameState,
-          Math.max(0, now() - drawStart),
-        );
+      if (timings) {
+        timings.draw += Math.max(0, now() - drawStart);
+        this.updateLayerTimings_(frameState);
       }
       executorGroup.renderedContext_ = drawState.context;
       return;
@@ -697,11 +681,9 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
 
     if (skipThisFrame) {
       frameState.animate = true;
-      if (measureTime) {
-        this.recordDrawDuration_(
-          frameState,
-          Math.max(0, now() - drawStart),
-        );
+      if (timings) {
+        timings.draw += Math.max(0, now() - drawStart);
+        this.updateLayerTimings_(frameState);
       }
       if (drawState) {
         executorGroup.renderedContext_ = drawState.context;
@@ -714,11 +696,9 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
         drawState.completed = true;
         drawState.needsClear = false;
       }
-      if (measureTime) {
-        this.recordDrawDuration_(
-          frameState,
-          Math.max(0, now() - drawStart),
-        );
+      if (timings) {
+        timings.draw += Math.max(0, now() - drawStart);
+        this.updateLayerTimings_(frameState);
       }
       if (drawState) {
         executorGroup.renderedContext_ = drawState.context;
@@ -982,10 +962,8 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
               animateBefore: !!frameState.animate,
             });
             frameState.animate = true;
-            this.recordDrawDuration_(
-              frameState,
-              Math.max(0, currentTime - drawStart),
-            );
+            timings.draw += Math.max(0, currentTime - drawStart);
+            this.updateLayerTimings_(frameState);
             executorGroup.renderedContext_ = drawState.context;
             return;
           }
@@ -1008,42 +986,11 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     drawState.completed = true;
     drawState.needsClear = false;
 
-    if (measureTime) {
+    if (timings) {
       const drawDuration = Math.max(0, now() - drawStart);
-      this.recordDrawDuration_(frameState, drawDuration);
-    }
-  }
-
-  /**
-   * @private
-   * @param {import("../../Map.js").FrameState} frameState Frame state.
-   * @param {number} duration Duration in milliseconds.
-   */
-  recordDrawDuration_(frameState, duration) {
-    if (!duration) {
-      return;
-    }
-    if (this.frameTimings_) {
-      this.frameTimings_.draw += duration;
+      timings.draw += drawDuration;
       this.updateLayerTimings_(frameState);
     }
-    frameState?.frameBudget?.consumeDrawTime(duration);
-  }
-
-  /**
-   * @private
-   * @param {import("../../Map.js").FrameState} frameState Frame state.
-   * @param {number} duration Duration in milliseconds.
-   */
-  recordBuildDuration_(frameState, duration) {
-    if (!duration) {
-      return;
-    }
-    if (this.frameTimings_) {
-      this.frameTimings_.build += duration;
-      this.updateLayerTimings_(frameState);
-    }
-    frameState?.frameBudget?.consumeBuildTime(duration);
   }
 
   /**
@@ -1995,7 +1942,6 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
   */
   prepareFrame(frameState) {
     const timings = createFrameTimings();
-    const frameBudget = frameState?.frameBudget ?? null;
     if (this.buildState_) {
       timings.renderedFeatures = this.buildState_.renderedFeatures;
       timings.skippedFeatures = this.buildState_.skippedFeatures;
@@ -2042,6 +1988,8 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       (!updateWhileInteracting && interacting)
     ) {
       this.animatingOrInteracting_ = true;
+      timings.build += Math.max(0, now() - timings.buildStart);
+      this.updateLayerTimings_(frameState);
       return true;
     }
     this.animatingOrInteracting_ = false;
@@ -2168,6 +2116,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       this.renderedFrameDeclutter_ === !!frameState.declutter &&
       containsExtent(this.wrappedRenderedExtent_, extent)
     ) {
+      timings.build += Math.max(0, now() - timings.buildStart);
       if (!equals(this.renderedExtent_, renderedExtent)) {
         this.hitDetectionImageData_ = null;
         this.renderedExtent_ = renderedExtent;
@@ -2280,16 +2229,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
     const userTransform = buildState.userTransform;
     const declutter = buildState.declutter;
     const chunkStart = now();
-    const availableBuildBudget =
-      frameBudget?.getRemainingBuildBudget() ?? BUILD_TIME_BUDGET_MS;
-    if (availableBuildBudget <= 0) {
-      frameState.animate = true;
-      this.lastRenderedCount_ = buildState.renderedFeatures;
-      this.lastSkippedCount_ = buildState.skippedFeatures;
-      this.updateLayerTimings_(frameState);
-      return true;
-    }
-    const budgetDeadline = chunkStart + availableBuildBudget;
+    const budgetDeadline = chunkStart + BUILD_TIME_BUDGET_MS;
     let ready = buildState.ready;
     let index = buildState.featureIndex;
     const featureCount = buildState.featureCount ?? features.length;
@@ -2323,7 +2263,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
       }
     }
 
-    this.recordBuildDuration_(frameState, Math.max(0, now() - chunkStart));
+    timings.build += Math.max(0, now() - chunkStart);
     buildState.featureIndex = index;
     buildState.ready = ready;
     buildState.renderedFeatures = timings.renderedFeatures;
@@ -2347,7 +2287,7 @@ class CanvasVectorLayerRenderer extends CanvasLayerRenderer {
 
     const finalizeStart = now();
     const replayGroupInstructions = builderGroup.finish();
-    this.recordBuildDuration_(frameState, Math.max(0, now() - finalizeStart));
+    timings.build += Math.max(0, now() - finalizeStart);
     const executorGroup = new ExecutorGroup(
       buildState.extent,
       buildState.resolution,

@@ -19,6 +19,7 @@ const FULL_SCENE_EXTENT = [-Infinity, -Infinity, Infinity, Infinity];
  * @return {CanvasImmediateRenderer} Vector context recorder.
  */
 export function createVexVectorContext(vexContext, frameState, options = {}) {
+  console.log("VEX: createVexVectorContext")
   const {
     pixelRatio = frameState.pixelRatio || 1,
     rotation = frameState.viewState ? frameState.viewState.rotation : 0,
@@ -27,13 +28,15 @@ export function createVexVectorContext(vexContext, frameState, options = {}) {
   } = options;
   const contextTransform =
     transform || frameState.coordinateToPixelTransform || createTransform();
-  return new CanvasImmediateRenderer(
+  const renderer = new CanvasImmediateRenderer(
     vexContext,
     pixelRatio,
     extent,
     contextTransform,
     rotation,
-  );
+  )
+  console.log('VEX: renderer',[renderer])
+  return renderer;
 }
 
 export default createVexVectorContext;
