@@ -18,7 +18,27 @@ import {
 import {getUid} from '../../util.js';
 import LayerRenderer from '../Layer.js';
 
-const SCENE_METERS_PER_PIXEL = 1000;
+const DEFAULT_VEX_SCENE_METERS_PER_PIXEL = 1000;
+if (
+  typeof window !== 'undefined' &&
+  window &&
+  typeof window.vexSceneMetersPerPixel === 'undefined'
+) {
+  window.vexSceneMetersPerPixel = DEFAULT_VEX_SCENE_METERS_PER_PIXEL;
+}
+
+/**
+ * @return {number} Current scene meters-per-pixel preference.
+ */
+function getVexSceneMetersPerPixel() {
+  if (typeof window !== 'undefined' && window) {
+    const value = Number(window.vexSceneMetersPerPixel);
+    if (Number.isFinite(value) && value > 0) {
+      return value;
+    }
+  }
+  return DEFAULT_VEX_SCENE_METERS_PER_PIXEL;
+}
 /**
  * Simple container factory for the Vex renderer.
  * @param {import('../../layer/Layer.js').default} layer Layer.
@@ -340,7 +360,8 @@ class VexVectorLayerRenderer extends LayerRenderer {
     const projection = frameState.viewState.projection;
     const metersPerUnit =
       (projection && projection.getMetersPerUnit()) || 1;
-    const resolution = SCENE_METERS_PER_PIXEL / metersPerUnit;
+    const targetMetersPerPixel = getVexSceneMetersPerPixel();
+    const resolution = targetMetersPerPixel / metersPerUnit;
     return resolution > 0 ? resolution : frameState.viewState.resolution;
   }
 
@@ -484,6 +505,27 @@ class VexVectorLayerRenderer extends LayerRenderer {
       currentTransform,
       this.sceneInverseTransform_,
     );
+    if (
+      typeof this.vexContext_.setSceneTransform === 'function' &&
+      typeof this.vexContext_.getSceneTransform === 'function'
+    ) {
+      const existing = this.vexContext_.getSceneTransform();
+      let needsUpdate = true;
+      if (Array.isArray(existing) && existing.length === 6) {
+        needsUpdate = false;
+        for (let i = 0; i < 6; ++i) {
+          if (existing[i] !== deltaTransform[i]) {
+            needsUpdate = true;
+            break;
+          }
+        }
+      }
+      if (needsUpdate) {
+        this.vexContext_.setSceneTransform(deltaTransform);
+      }
+      return;
+    }
+
     const zoomX = deltaTransform[0];
     const zoomY = deltaTransform[3];
     const zoom =
@@ -494,11 +536,22 @@ class VexVectorLayerRenderer extends LayerRenderer {
     const x = deltaTransform[4];
     const y = deltaTransform[5];
 
-    const sceneView = this.vexContext_.getSceneView();
+    const sceneView =
+      (typeof this.vexContext_.getSceneView === 'function' &&
+        this.vexContext_.getSceneView()) ||
+      [NaN, NaN, NaN];
 
-    if(sceneView[0]===x && sceneView[1]===y && sceneView[2]===safeZoom) return;
+    if (
+      sceneView[0] === x &&
+      sceneView[1] === y &&
+      sceneView[2] === safeZoom
+    ) {
+      return;
+    }
 
-    this.vexContext_.setSceneView(x, y, safeZoom);
+    if (typeof this.vexContext_.setSceneView === 'function') {
+      this.vexContext_.setSceneView(x, y, safeZoom);
+    }
   }
 
   /**

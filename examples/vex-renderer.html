@@ -9,6 +9,12 @@ docs: >
   when the view rotation or device pixel ratio changes.
 tags: "vector,experimental"
 ---
+<script>
+  setTimeout(() => {
+    window.vexRendererSwitchZoom = 16;
+    window.vexSceneMetersPerPixel = 10;
+  }, 2000);
+</script>
 <div id="map" class="map"></div>
 <div class="vex-controls">
   <label class="toggle">

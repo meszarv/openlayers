@@ -7,6 +7,19 @@ import ExampleBuilder from './example-builder.js';
 
 const src = path.join(dirname(fileURLToPath(import.meta.url)), '..');
 const root = path.join(src, '..');
+const vexSource = path.join(root, 'public', 'vex');
+const envUseRealVex = process.env.OL_USE_REAL_VEX;
+const useRealVexAssets =
+  typeof envUseRealVex === 'string' &&
+  !['0', 'false', ''].includes(envUseRealVex.toLowerCase());
+const includeVexAssets = useRealVexAssets && fs.existsSync(vexSource);
+if (useRealVexAssets && !includeVexAssets) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    'OL_USE_REAL_VEX is enabled but no Vex assets were found in',
+    vexSource,
+  );
+}
 
 export default {
   context: src,
@@ -69,7 +82,7 @@ export default {
         {from: 'resources', to: 'resources'},
         {from: 'index.html', to: 'index.html'},
         {from: 'index.js', to: 'index.js'},
-        {from: '../../public/vex', to: 'vex'},
+        ...(includeVexAssets ? [{from: vexSource, to: 'vex'}] : []),
       ],
     }),
   ],
