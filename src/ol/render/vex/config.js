@@ -30,13 +30,16 @@ function getRuntimeOverride() {
   if (typeof globalThis === 'undefined') {
     return null;
   }
-  if (!('OL_USE_REAL_VEX' in globalThis)) {
-    return null;
+  if ('__OL_USE_REAL_VEX_RENDERER__' in globalThis) {
+    return !!globalThis.__OL_USE_REAL_VEX_RENDERER__;
   }
-  return !!globalThis.OL_USE_REAL_VEX;
+  if ('OL_USE_REAL_VEX' in globalThis) {
+    return !!globalThis.OL_USE_REAL_VEX;
+  }
+  return null;
 }
 
-const DEFAULT_USE_REAL_VEX = false;
+const DEFAULT_USE_REAL_VEX = true;
 let manualOverride = null;
 
 /**

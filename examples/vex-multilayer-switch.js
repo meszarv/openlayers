@@ -11,7 +11,6 @@ import VectorSource from '../src/ol/source/Vector.js';
 import Fill from '../src/ol/style/Fill.js';
 import Stroke from '../src/ol/style/Stroke.js';
 import Style from '../src/ol/style/Style.js';
-import {setUseRealVexRenderer} from '../src/ol/render/vex/config.js';
 
 const LAYER_COUNT = 250;
 const FEATURES_PER_LAYER = 20;
@@ -21,11 +20,6 @@ const CELL_SPACING = 9000;
 const VERT_SPREAD = CELL_SPACING * 0.35;
 
 const mapCenter = fromLonLat([-98.5, 38.0]);
-
-setUseRealVexRenderer(false);
-setTimeout(() => {
-  setUseRealVexRenderer(true);
-}, 2000);
 
 const baseLayer = new TileLayer({
   source: new OSM(),
