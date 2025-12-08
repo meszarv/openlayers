@@ -5,6 +5,7 @@ import VectorLayer from '../src/ol/layer/Vector.js';
 import OSM from '../src/ol/source/OSM.js';
 import VectorSource from '../src/ol/source/Vector.js';
 import RenderFeature from '../src/ol/render/Feature.js';
+import Draw from '../src/ol/interaction/Draw.js';
 import {getUid} from '../src/ol/util.js';
 import CircleStyle from '../src/ol/style/Circle.js';
 import Fill from '../src/ol/style/Fill.js';
@@ -19,6 +20,7 @@ const applyButton = document.getElementById('city-apply');
 const extendRangeInput = document.getElementById('city-extend');
 const statusElement = document.getElementById('generation-status');
 const renderStatsElement = document.getElementById('render-stats');
+const addPlateModeInput = document.getElementById('add-plates-mode');
 
 const DEFAULT_MAX_CITIES = 50;
 const EXTENDED_MAX_CITIES = 200;
@@ -143,6 +145,13 @@ const baseLayer = new TileLayer({
 });
 
 const vectorLayers = [];
+const extraPlateSource = new VectorSource();
+const extraPlateLayer = new VectorLayer({
+  source: extraPlateSource,
+  style: styles.plate,
+  className: 'ol-layer add-plates-layer',
+});
+extraPlateLayer.setZIndex(1e6);
 let layerClassCounter = 0;
 
 function nextLayerClassName() {
@@ -160,7 +169,7 @@ function createVectorLayer() {
 
 const map = new Map({
   target: 'map',
-  layers: [baseLayer],
+  layers: [baseLayer, extraPlateLayer],
   view: new View({
     center: [0, 0],
     zoom: 3,
@@ -168,6 +177,21 @@ const map = new Map({
 });
 
 const viewportElement = map.getViewport();
+const addPlateDrawInteraction = new Draw({
+  source: extraPlateSource,
+  type: 'Point',
+  style: styles.plate,
+});
+addPlateDrawInteraction.on('drawend', (event) => {
+  event.feature?.set('level', 'plate');
+});
+addPlateDrawInteraction.setActive(false);
+map.addInteraction(addPlateDrawInteraction);
+
+function syncAddPlateMode() {
+  const enabled = !!addPlateModeInput?.checked;
+  addPlateDrawInteraction.setActive(enabled);
+}
 
 function updateHoveredFeature(feature, layer) {
   if (feature === hoveredFeature && layer === hoveredLayer) {
@@ -735,6 +759,12 @@ if (extendRangeInput) {
   });
 }
 
+if (addPlateModeInput) {
+  addPlateModeInput.addEventListener('change', () => {
+    syncAddPlateMode();
+  });
+}
+
 if (applyButton) {
   applyButton.addEventListener('click', regenerate);
 }
@@ -743,4 +773,5 @@ applySliderLimit();
 updateCityCountLabel();
 updateLayerCountLabel();
 updateLayerCollection(DEFAULT_LAYER_COUNT);
+syncAddPlateMode();
 regenerate();

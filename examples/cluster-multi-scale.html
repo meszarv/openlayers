@@ -23,6 +23,10 @@ tags: "vector, performance"
     <input id="city-extend" type="checkbox"/>
     Extend range up to 200 areas
   </label>
+  <label class="mode-option">
+    <input id="add-plates-mode" type="checkbox"/>
+    Add plates mode (click the map to place extra plates)
+  </label>
   <p id="generation-status" class="status">Preparing layered features...</p>
   <p class="status note">Each city adds 10,000 features: 1 city outline, 36 house grids, 576 rooms, 576 room text paths, 4,608 tables, and 4,203 plates.</p>
   <div id="render-stats" class="render-stats">Zoom — | Build — ms | Draw — ms | LOD — ms | Total — ms | Rendered — | Skipped — | FPS —</div>
@@ -86,6 +90,14 @@ tags: "vector, performance"
     margin-top: 0.25rem;
     font-size: 0.85rem;
     color: #555;
+  }
+
+  .mode-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 0.4rem;
+    font-size: 0.85rem;
   }
 
   .render-stats {
