@@ -286,6 +286,17 @@ class CompositeMapRenderer extends MapRenderer {
   }
 
   /**
+   * Hint shared vector canvas managers that a new render cycle was requested.
+   */
+  bumpSharedCanvasEpoch() {
+    if (this.sharedLayerGroupsCache_) {
+      this.sharedLayerGroupsCache_.forEach((entry) => {
+        entry?.manager?.bumpContextEpoch?.('map-render');
+      });
+    }
+  }
+
+  /**
    * Render.
    * @param {?import("../Map.js").FrameState} frameState Frame state.
    * @override

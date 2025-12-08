@@ -1491,11 +1491,14 @@ class Map extends BaseObject {
   }
 
   /**
-   * Request a map rendering (at the next animation frame).
-   * @api
-   */
+  * Request a map rendering (at the next animation frame).
+  * @api
+  */
   render() {
     if (this.renderer_ && this.animationDelayKey_ === undefined) {
+      if(typeof this.renderer_.bumpSharedCanvasEpoch === 'function'){
+        this.renderer_.bumpSharedCanvasEpoch();
+      }
       this.animationDelayKey_ = requestAnimationFrame(this.animationDelay_);
     }
   }
