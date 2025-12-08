@@ -360,6 +360,7 @@ class CompositeMapRenderer extends MapRenderer {
 
       const element = layer.render(frameState, previousElement);
       if (!element) {
+        previousElement = null;
         continue;
       }
       if (element !== previousElement) {
