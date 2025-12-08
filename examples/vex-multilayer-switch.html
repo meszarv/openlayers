@@ -1,0 +1,60 @@
+---
+layout: example.html
+title: Vex Multilayer Switching (experimental)
+shortdesc: Stress-test the shared canvas/vex renderer switch across 250 layers (~5,000 features).
+docs: >
+  This example spins up 250 vector layers with roughly 5,000 features total and lets you toggle
+  between canvas-only rendering and the experimental Vex renderer (which falls back to canvas
+  on detailed zoom levels). Use it to observe how the shared canvas infrastructure behaves when
+  many layers share pooled contexts.
+tags: "vector,experimental"
+---
+<script>
+  setTimeout(() => {
+    window.__OL_USE_REAL_VEX_RENDERER__ = true;
+    window.vexRendererSwitchZoom = 10;
+    window.vexSceneMetersPerPixel = 10;
+  }, 2000);
+</script>
+<div id="map" class="map multi-vex-map"></div>
+<section class="multi-vex-controls">
+  <h3>Renderer mode</h3>
+  <label class="mode-option">
+    <input type="radio" name="renderer-mode" id="mode-auto" value="auto" checked />
+    <span>Vex with automatic canvas fallback on detailed zoom</span>
+  </label>
+  <label class="mode-option">
+    <input type="radio" name="renderer-mode" id="mode-canvas" value="canvas" />
+    <span>Canvas only</span>
+  </label>
+  <p class="mode-status">
+    <strong>Active mode:</strong> <span id="mode-status">initializing…</span>
+  </p>
+  <p class="mode-summary">
+    Rendering <strong id="layer-count">0</strong> layers totaling
+    <strong id="feature-count">0</strong> features.
+  </p>
+  <label class="layer-slider" for="visible-layer-count">
+    Visible layers: <strong id="visible-layer-value">0</strong>
+  </label>
+  <input
+    id="visible-layer-count"
+    type="range"
+    min="1"
+    max="250"
+    step="1"
+    value="1"
+  />
+</section>
+<section class="multi-vex-note">
+  <p>
+    Each vector layer hosts ~20 randomized points with unique styling so you can easily spot
+    redraw issues or ghosting artifacts as you pan and zoom. The automatic mode keeps Vex active
+    while zoomed out, then lets the shared canvas renderer take over when crossing
+    <code>window.vexRendererSwitchZoom</code>.
+  </p>
+  <p>
+    Toggle between the two modes to verify that pooled canvases stay responsive and that the
+    renderer switch happens seamlessly across hundreds of layers.
+  </p>
+</section>
