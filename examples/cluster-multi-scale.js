@@ -1,16 +1,23 @@
+import Feature from '../src/ol/Feature.js';
 import Map from '../src/ol/Map.js';
 import View from '../src/ol/View.js';
+import Draw from '../src/ol/interaction/Draw.js';
+import DragBox from '../src/ol/interaction/DragBox.js';
+import DragPan from '../src/ol/interaction/DragPan.js';
+import Select from '../src/ol/interaction/Select.js';
 import TileLayer from '../src/ol/layer/Tile.js';
 import VectorLayer from '../src/ol/layer/Vector.js';
+import RenderFeature from '../src/ol/render/Feature.js';
 import OSM from '../src/ol/source/OSM.js';
 import VectorSource from '../src/ol/source/Vector.js';
-import RenderFeature from '../src/ol/render/Feature.js';
-import Draw from '../src/ol/interaction/Draw.js';
-import {getUid} from '../src/ol/util.js';
 import CircleStyle from '../src/ol/style/Circle.js';
 import Fill from '../src/ol/style/Fill.js';
 import Stroke from '../src/ol/style/Stroke.js';
 import Style from '../src/ol/style/Style.js';
+import Point from '../src/ol/geom/Point.js';
+import Polygon from '../src/ol/geom/Polygon.js';
+import {always} from '../src/ol/events/condition.js';
+import {getUid} from '../src/ol/util.js';
 
 const cityCountInput = document.getElementById('city-count');
 const cityCountValue = document.getElementById('city-count-value');
@@ -21,6 +28,7 @@ const extendRangeInput = document.getElementById('city-extend');
 const statusElement = document.getElementById('generation-status');
 const renderStatsElement = document.getElementById('render-stats');
 const addPlateModeInput = document.getElementById('add-plates-mode');
+const selectionModeInput = document.getElementById('selection-mode');
 
 const DEFAULT_MAX_CITIES = 50;
 const EXTENDED_MAX_CITIES = 200;
@@ -128,6 +136,7 @@ const LEVEL_PROPERTIES = {
 
 let hoveredFeature = null;
 let hoveredLayer = null;
+let selectInteraction = null;
 
 const styleForFeature = (feature) => {
   const level = feature.get('level');
@@ -148,8 +157,8 @@ const vectorLayers = [];
 const extraPlateSource = new VectorSource();
 const extraPlateLayer = new VectorLayer({
   source: extraPlateSource,
-  style: styles.plate,
-  className: 'ol-layer add-plates-layer',
+  style: styleForFeature,
+  // className: 'ol-layer',
 });
 extraPlateLayer.setZIndex(1e6);
 let layerClassCounter = 0;
@@ -163,7 +172,7 @@ function createVectorLayer() {
   return new VectorLayer({
     source: new VectorSource(),
     style: styleForFeature,
-    className: nextLayerClassName(),
+    // className: nextLayerClassName(),
   });
 }
 
@@ -177,6 +186,10 @@ const map = new Map({
 });
 
 const viewportElement = map.getViewport();
+const dragPanInteractions = map
+  .getInteractions()
+  .getArray()
+  .filter((interaction) => interaction instanceof DragPan);
 const addPlateDrawInteraction = new Draw({
   source: extraPlateSource,
   type: 'Point',
@@ -192,6 +205,114 @@ function syncAddPlateMode() {
   const enabled = !!addPlateModeInput?.checked;
   addPlateDrawInteraction.setActive(enabled);
 }
+
+const MIN_SELECTION_PIXEL_SIZE = 12;
+
+function getFeatureExtentForSelection(feature) {
+  if (!feature) {
+    return null;
+  }
+  if (typeof feature.getExtent === 'function') {
+    return feature.getExtent();
+  }
+  const geometry = feature.getGeometry?.();
+  if (geometry?.getExtent) {
+    return geometry.getExtent();
+  }
+  return null;
+}
+
+function createSelectionBoxGeometry(feature) {
+  const extent = getFeatureExtentForSelection(feature);
+  if (!extent) {
+    return null;
+  }
+  const width = extent[2] - extent[0];
+  const height = extent[3] - extent[1];
+  const view = map.getView();
+  const resolution = view?.getResolution() ?? 1;
+  const minSize = resolution * MIN_SELECTION_PIXEL_SIZE;
+  const size = Math.max(width, height, minSize);
+  const centerX = (extent[0] + extent[2]) / 2;
+  const centerY = (extent[1] + extent[3]) / 2;
+  const half = size / 2;
+  return new Polygon([
+    [
+      [centerX - half, centerY - half],
+      [centerX - half, centerY + half],
+      [centerX + half, centerY + half],
+      [centerX + half, centerY - half],
+      [centerX - half, centerY - half],
+    ],
+  ]);
+}
+
+const selectionBoxStyle = new Style({
+  stroke: new Stroke({color: 'rgba(211, 47, 47, 0.95)', width: 2}),
+  fill: new Fill({color: 'rgba(244, 67, 54, 0.12)'}),
+  geometry: createSelectionBoxGeometry,
+});
+
+selectInteraction = new Select({
+  layers: (layer) => layer instanceof VectorLayer,
+  multi: false,
+  style: (feature) => {
+    const level = feature.get('level');
+    const baseStyle = styles[level] ?? highlightStyles[level];
+    if (baseStyle) {
+      return [baseStyle, selectionBoxStyle];
+    }
+    return selectionBoxStyle;
+  },
+});
+selectInteraction.setActive(false);
+map.addInteraction(selectInteraction);
+const dragBoxInteraction = new DragBox({condition: always});
+dragBoxInteraction.setActive(false);
+map.addInteraction(dragBoxInteraction);
+
+function clearSelection() {
+  selectInteraction?.getFeatures().clear();
+}
+
+function selectFeaturesInExtent(extent) {
+  if (!extent || !selectInteraction) {
+    return;
+  }
+  const collection = selectInteraction.getFeatures();
+  collection.clear();
+  const layers = vectorLayers.concat(extraPlateLayer);
+  for (let i = 0; i < layers.length; ++i) {
+    layers[i]
+      ?.getSource()
+      ?.forEachFeatureIntersectingExtent(extent, (feature) => {
+        collection.push(feature);
+      });
+  }
+}
+
+function syncSelectionMode() {
+  const enabled = !!selectionModeInput?.checked;
+  selectInteraction?.setActive(enabled);
+  dragBoxInteraction?.setActive(enabled);
+  for (let i = 0; i < dragPanInteractions.length; ++i) {
+    dragPanInteractions[i].setActive(!enabled);
+  }
+  if (!enabled) {
+    clearSelection();
+  }
+}
+
+dragBoxInteraction.on('boxend', () => {
+  if (!selectionModeInput?.checked) {
+    return;
+  }
+  const geometry = dragBoxInteraction.getGeometry();
+  if (!geometry) {
+    return;
+  }
+  selectFeaturesInExtent(geometry.getExtent());
+});
 
 function updateHoveredFeature(feature, layer) {
   if (feature === hoveredFeature && layer === hoveredLayer) {
@@ -445,6 +566,13 @@ function triangleRingFromBounds(bounds, variant) {
 }
 
 function createPointFeature(coordinate, level) {
+  if (level === 'plate') {
+    const feature = new Feature({
+      geometry: new Point(coordinate),
+    });
+    feature.set('level', 'plate');
+    return feature;
+  }
   const flat = new Float32Array(COORD_STRIDE);
   flat[0] = coordinate[0];
   flat[1] = coordinate[1];
@@ -704,6 +832,7 @@ function regenerate() {
       return;
     }
     updateLayerCollection(requestedLayers);
+    clearSelection();
     for (let i = 0; i < vectorLayers.length; ++i) {
       vectorLayers[i].getSource().clear(true);
     }
@@ -765,6 +894,12 @@ if (addPlateModeInput) {
   });
 }
 
+if (selectionModeInput) {
+  selectionModeInput.addEventListener('change', () => {
+    syncSelectionMode();
+  });
+}
+
 if (applyButton) {
   applyButton.addEventListener('click', regenerate);
 }
@@ -774,4 +909,5 @@ updateCityCountLabel();
 updateLayerCountLabel();
 updateLayerCollection(DEFAULT_LAYER_COUNT);
 syncAddPlateMode();
+syncSelectionMode();
 regenerate();
