@@ -1494,9 +1494,13 @@ class Map extends BaseObject {
   * Request a map rendering (at the next animation frame).
   * @api
   */
-  render() {
+  render(){
+    this.renderInternal(true);
+  }
+
+  renderInternal(bumpEpoch) {
     if (this.renderer_ && this.animationDelayKey_ === undefined) {
-      if(typeof this.renderer_.bumpSharedCanvasEpoch === 'function'){
+      if(bumpEpoch && typeof this.renderer_.bumpSharedCanvasEpoch === 'function'){
         this.renderer_.bumpSharedCanvasEpoch();
       }
       this.animationDelayKey_ = requestAnimationFrame(this.animationDelay_);
@@ -1620,7 +1624,7 @@ class Map extends BaseObject {
 
     if (frameState) {
       if (frameState.animate) {
-        this.render();
+        this.renderInternal(false);
       }
       Array.prototype.push.apply(
         this.postRenderFunctions_,
