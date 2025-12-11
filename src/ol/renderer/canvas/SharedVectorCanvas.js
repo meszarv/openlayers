@@ -251,7 +251,11 @@ class SharedVectorCanvas {
    * @param {HTMLElement|null} target Previous target element.
    */
   beginFrame(frameState, target) {
-    if (!this.hostRenderer_) {
+    if (
+      !this.hostRenderer_ ||
+      !this.hostRenderer_.getLayer ||
+      !this.hostRenderer_.getLayer()
+    ) {
       return;
     }
     const signature = this.computeViewSignature_(frameState);
@@ -289,6 +293,9 @@ class SharedVectorCanvas {
    * @param {import('../../Map.js').FrameState} frameState Frame state.
    */
   ensureHostReady(frameState) {
+    if (!this.hostRenderer_ || !this.hostRenderer_.getLayer()) {
+      return;
+    }
     if (!this.context_ || this.frameId_ !== frameState.time) {
       this.beginFrame(frameState, this.container_);
     }

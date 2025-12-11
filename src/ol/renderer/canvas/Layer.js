@@ -169,7 +169,12 @@ class CanvasLayerRenderer extends LayerRenderer {
     ) {
       const canvas = target.firstElementChild;
       if (canvas instanceof HTMLCanvasElement) {
-        context = canvas.getContext('2d');
+        try {
+          context = canvas.getContext('2d');
+        } catch {
+          // Canvas was transferred offscreen (e.g. Vex renderer). Treat as incompatible.
+          context = null;
+        }
       }
     }
     if (context && context.canvas.style.transform === transform) {

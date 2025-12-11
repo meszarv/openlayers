@@ -1,9 +1,29 @@
 /**
  * @module ol/layer/Vector
  */
+import {listen, unlistenByKey} from '../events.js';
 import CanvasVectorLayerRenderer from '../renderer/canvas/VectorLayer.js';
 import VexVectorLayerRenderer from '../renderer/vex/VectorLayer.js';
 import BaseVectorLayer from './BaseVector.js';
+
+//TODO: expose this value as parameter
+const DEFAULT_VEX_SWITCH_ZOOM = 7;
+window.vexRendererSwitchZoom = DEFAULT_VEX_SWITCH_ZOOM;
+
+/**
+ * @return {number} The zoom where the renderer switches from Vex to Canvas.
+ */
+function getVexRendererSwitchZoom() {
+  if (
+    typeof window === 'undefined' ||
+    !window ||
+    typeof window.vexRendererSwitchZoom === 'undefined'
+  ) {
+    return DEFAULT_VEX_SWITCH_ZOOM;
+  }
+  const value = Number(window.vexRendererSwitchZoom);
+  return Number.isFinite(value) ? value : DEFAULT_VEX_SWITCH_ZOOM;
+}
 
 /**
  * @template {import("../source/Vector.js").default<FeatureType>} [VectorSourceType=import("../source/Vector.js").default<*>]
@@ -55,6 +75,8 @@ import BaseVectorLayer from './BaseVector.js';
  * be recreated during interactions. See also `updateWhileAnimating`.
  * @property {Object<string, *>} [properties] Arbitrary observable properties. Can be accessed with `#get()` and `#set()`.
  * @property {'canvas'|'vex'} [rendererHint='canvas'] Experimental renderer selection.
+ * When set to `'vex'`, the layer automatically switches back to canvas rendering when the view zoom
+ * is greater than or equal to `window.vexRendererSwitchZoom` (defaults to `16` when unset).
  */
 
 /**
@@ -84,19 +106,348 @@ class VectorLayer extends BaseVectorLayer {
      * @type {'canvas'|'vex'}
      * @private
      */
-    this.rendererHint_ = (options && options.rendererHint) || (options && options['type']==='vex'&& options['type']) ||'canvas';
+    this.rendererHint_ =
+      (options && options.rendererHint) || 'vex';
+      // ((options && options['type'] === 'vex' && options['type']) || 'canvas');
+
+    /**
+     * @type {boolean}
+     * @private
+     */
+    this.autoVexSwitchEnabled_ = this.rendererHint_ === 'vex';
+
+    /**
+     * @type {'canvas'|'vex'}
+     * @private
+     */
+    this.activeRendererHint_ = this.rendererHint_;
+
+    /**
+     * @type {?import("../Map.js").default}
+     * @private
+     */
+    this.autoSwitchMap_ = null;
+
+    /**
+     * @type {?import("../Map.js").default}
+     * @private
+     */
+    this.manualMapAttachment_ = null;
+
+    /**
+     * @type {import("../events.js").EventsKey|null}
+     * @private
+     */
+    this.viewResolutionKey_ = null;
+
+    /**
+     * @type {import("../events.js").EventsKey|null}
+     * @private
+     */
+    this.viewChangeKey_ = null;
+
+    /**
+     * Detached Vex renderer we keep around for fast reuse after auto-switching.
+     * @type {import("../renderer/vex/VectorLayer.js").default|null}
+     * @private
+     */
+    this.cachedVexRenderer_ = null;
   }
 
   /**
    * @override
    */
   createRenderer() {
-    if (this.rendererHint_ === 'vex') {
+    const rendererHint = this.getRendererHintForCurrentZoom_();
+    this.activeRendererHint_ = rendererHint;
+    const cached = this.acquireCachedRenderer_(rendererHint);
+    if (cached) {
+      return cached;
+    }
+    return this.instantiateRenderer_(rendererHint);
+  }
+
+  /**
+   * @return {'canvas'|'vex'} The renderer currently in use.
+   */
+  getActiveRendererHint() {
+    return this.activeRendererHint_ || this.rendererHint_;
+  }
+
+  /**
+   * @return {number} Zoom level where the renderer switches from Vex to Canvas.
+   */
+  getVexSwitchZoom() {
+    return getVexRendererSwitchZoom();
+  }
+
+  /**
+   * @override
+   */
+  setMap(map) {
+    this.manualMapAttachment_ = map;
+    super.setMap(map);
+    this.handleAutoSwitchMapChange_(map);
+  }
+
+  /**
+   * @override
+   */
+  setMapInternal(map) {
+    super.setMapInternal(map);
+    this.handleAutoSwitchMapChange_(map);
+  }
+
+  /**
+   * @override
+   */
+  disposeInternal() {
+    this.detachAutoSwitchListeners_();
+    if (this.cachedVexRenderer_) {
+      this.cachedVexRenderer_.dispose();
+      this.cachedVexRenderer_ = null;
+    }
+    super.disposeInternal();
+  }
+
+  /**
+   * @private
+   */
+  handleAutoSwitchMapChange_(map) {
+    if (!this.autoVexSwitchEnabled_) {
+      return;
+    }
+    const attachedMap = this.getAttachedMap_() || map || null;
+    if (attachedMap === this.autoSwitchMap_) {
+      return;
+    }
+    this.detachAutoSwitchListeners_();
+    this.autoSwitchMap_ = attachedMap;
+    if (!attachedMap) {
+      return;
+    }
+    this.attachAutoSwitchListeners_(attachedMap);
+    this.handleViewResolutionChange_();
+  }
+
+  /**
+   * @private
+   * @return {?import("../Map.js").default}
+   */
+  getAttachedMap_() {
+    return this.getMapInternal() || this.manualMapAttachment_;
+  }
+
+  /**
+   * @param {import("../Map.js").default} map Map instance.
+   * @private
+   */
+  attachAutoSwitchListeners_(map) {
+    if (this.viewChangeKey_) {
+      return;
+    }
+    this.viewChangeKey_ = listen(
+      map,
+      'change:view',
+      this.handleAttachedViewChange_,
+      this,
+    );
+    const view = map.getView();
+    if (view) {
+      this.viewResolutionKey_ = listen(
+        view,
+        'change:resolution',
+        this.handleViewResolutionChange_,
+        this,
+      );
+    }
+  }
+
+  /**
+   * @private
+   */
+  detachAutoSwitchListeners_() {
+    if (this.viewResolutionKey_) {
+      unlistenByKey(this.viewResolutionKey_);
+      this.viewResolutionKey_ = null;
+    }
+    if (this.viewChangeKey_) {
+      unlistenByKey(this.viewChangeKey_);
+      this.viewChangeKey_ = null;
+    }
+    this.autoSwitchMap_ = null;
+  }
+
+  /**
+   * @private
+   */
+  handleAttachedViewChange_() {
+    if (!this.autoSwitchMap_) {
+      return;
+    }
+    if (this.viewResolutionKey_) {
+      unlistenByKey(this.viewResolutionKey_);
+      this.viewResolutionKey_ = null;
+    }
+    const view = this.autoSwitchMap_.getView();
+    if (view) {
+      this.viewResolutionKey_ = listen(
+        view,
+        'change:resolution',
+        this.handleViewResolutionChange_,
+        this,
+      );
+    }
+    this.handleViewResolutionChange_();
+  }
+
+  /**
+   * @private
+   */
+  handleViewResolutionChange_() {
+    if (!this.autoVexSwitchEnabled_) {
+      return;
+    }
+    const rendererHint = this.getRendererHintForCurrentZoom_();
+    if (rendererHint === this.activeRendererHint_) {
+      return;
+    }
+    this.switchRenderer_(rendererHint);
+  }
+
+  /**
+   * @private
+   * @return {'canvas'|'vex'}
+   */
+  getRendererHintForCurrentZoom_() {
+    if (!this.autoVexSwitchEnabled_) {
+      return this.rendererHint_;
+    }
+    const zoom = this.getCurrentViewZoom_();
+    if (typeof zoom !== 'number') {
+      return 'vex';
+    }
+    const threshold = getVexRendererSwitchZoom();
+    return zoom < threshold ? 'vex' : 'canvas';
+  }
+
+  /**
+   * @private
+   * @return {number|null}
+   */
+  getCurrentViewZoom_() {
+    const map = this.getAttachedMap_();
+    const view = map ? map.getView() : null;
+    return view ? view.getZoom() : null;
+  }
+
+  /**
+   * @param {'canvas'|'vex'} rendererHint Renderer hint.
+   * @private
+   */
+  switchRenderer_(rendererHint) {
+    const currentRenderer = this.renderer_;
+    if (currentRenderer) {
+      // Cache or dispose renderer before replacing so we can reuse Vex instances.
+      this.cacheRenderer_(currentRenderer);
+      this.renderer_ = null;
+      this.rendered = false;
+    }
+    const cached = this.acquireCachedRenderer_(rendererHint);
+    if (cached) {
+      this.renderer_ = cached;
+    } else {
+      this.renderer_ = this.instantiateRenderer_(rendererHint);
+    }
+    this.activeRendererHint_ = rendererHint;
+    this.changed();
+  }
+
+  /**
+   * @param {'canvas'|'vex'} rendererHint Renderer hint.
+   * @return {import("../renderer/Layer.js").default|null} Renderer instance.
+   * @private
+   */
+  acquireCachedRenderer_(rendererHint) {
+    if (rendererHint !== 'vex' || !this.cachedVexRenderer_) {
+      return null;
+    }
+    // Rehydrating a cached Vex renderer is faster than rebuilding its scene.
+    const renderer = this.cachedVexRenderer_;
+    this.cachedVexRenderer_ = null;
+    return renderer;
+  }
+
+  /**
+   * @param {'canvas'|'vex'} rendererHint Renderer hint.
+   * @return {import("../renderer/Layer.js").default}
+   * @private
+   */
+  instantiateRenderer_(rendererHint) {
+    if (rendererHint === 'vex') {
       return new VexVectorLayerRenderer(this);
     }
     return new CanvasVectorLayerRenderer(this);
   }
 
+  /**
+   * @param {import("../renderer/Layer.js").default} renderer Renderer to cache/dispose.
+   * @private
+   */
+  cacheRenderer_(renderer) {
+    if (renderer instanceof VexVectorLayerRenderer) {
+      const container =
+        /** @type {import("../renderer/vex/VectorLayer.js").default} */ (
+          renderer
+        ).container_;
+      if (container && container.parentNode) {
+        container.parentNode.removeChild(container);
+      }
+      // Keep the renderer (and its OffscreenCanvas) alive for a future switch.
+      this.cachedVexRenderer_ = renderer;
+      return;
+    }
+    renderer.dispose();
+  }
+
+  /**
+   * @override
+   */
+  clearRenderer() {
+    if (this.cachedVexRenderer_) {
+      this.cachedVexRenderer_.dispose();
+      this.cachedVexRenderer_ = null;
+    }
+    super.clearRenderer();
+  }
+
+  /**
+   * Force the active or cached renderer to rebuild its recorded instructions.
+   */
+  invalidateRendererCache() {
+    let invalidated = false;
+    if (
+      this.renderer_ instanceof VexVectorLayerRenderer &&
+      typeof this.renderer_.invalidateCache === 'function'
+    ) {
+      // Force the live Vex renderer to drop recorded instructions.
+      this.renderer_.invalidateCache();
+      invalidated = true;
+    }
+    if (
+      this.cachedVexRenderer_ &&
+      typeof this.cachedVexRenderer_.invalidateCache === 'function'
+    ) {
+      // Keep cached renderer in sync so it doesn't restore stale visuals later.
+      this.cachedVexRenderer_.invalidateCache();
+      invalidated = true;
+    }
+    if (!invalidated) {
+      this.changed();
+      return;
+    }
+    this.changed();
+  }
 
 }
 

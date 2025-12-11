@@ -110,3 +110,4 @@ class FrameBudget {
 }
 
 export default FrameBudget;
+

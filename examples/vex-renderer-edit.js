@@ -1,10 +1,14 @@
 import Feature from '../src/ol/Feature.js';
 import Map from '../src/ol/Map.js';
 import View from '../src/ol/View.js';
+import {containsExtent} from '../src/ol/extent.js';
+import DragBox from '../src/ol/interaction/DragBox.js';
+import DragPan from '../src/ol/interaction/DragPan.js';
 import Point from '../src/ol/geom/Point.js';
 import Polygon from '../src/ol/geom/Polygon.js';
 import TileLayer from '../src/ol/layer/Tile.js';
 import VectorLayer from '../src/ol/layer/Vector.js';
+import VexVectorLayer from '../src/ol/layer/VexVector.js';
 import {fromLonLat} from '../src/ol/proj.js';
 import OSM from '../src/ol/source/OSM.js';
 import VectorSource from '../src/ol/source/Vector.js';
@@ -60,6 +64,7 @@ const plazaFeatures = plazaPoints.map(
 );
 
 const initialFeatures = [...blockFeatures, ...plazaFeatures];
+const selectedFeatures = new Set();
 
 const vectorSource = new VectorSource({
   features: initialFeatures.slice(),
@@ -85,37 +90,74 @@ const plazaStyle = new Style({
   }),
 });
 
-const cityStyles = {
-  city: new Style({
-    fill: new Fill({color: 'rgba(33, 150, 243, 0.12)'}),
-    stroke: new Stroke({color: '#0d47a1', width: 2}),
+const selectedStyle = new Style({
+  fill: new Fill({color: 'rgba(255, 0, 255, 0.3)'}),
+  stroke: new Stroke({color: '#ff00ff', width: 3}),
+  image: new CircleStyle({
+    radius: 8,
+    fill: new Fill({color: '#ff00ff'}),
+    stroke: new Stroke({color: '#ffffff', width: 2}),
   }),
-  house: new Style({
-    fill: new Fill({color: 'rgba(30, 136, 229, 0.18)'}),
-    stroke: new Stroke({color: '#1976d2', width: 1.3}),
-  }),
-  room: new Style({
-    fill: new Fill({color: 'rgba(76, 175, 80, 0.2)'}),
-    stroke: new Stroke({color: '#2e7d32', width: 1}),
-  }),
-  roomText: new Style({
-    fill: new Fill({color: 'rgba(165, 214, 167, 0.35)'}),
-    stroke: new Stroke({color: '#1b5e20', width: 1}),
-  }),
-  table: new Style({
-    fill: new Fill({color: 'rgba(255, 160, 0, 0.32)'}),
-    stroke: new Stroke({color: '#ef6c00', width: 1}),
-  }),
-  plate: new Style({
-    image: new CircleStyle({
-      radius: 3,
-      fill: new Fill({color: 'rgba(126, 87, 194, 0.75)'}),
-      stroke: new Stroke({color: '#ede7f6', width: 0.8}),
+});
+
+const CITY_PALETTES = [
+  {
+    city: {fill: 'rgba(33, 150, 243, 0.12)', stroke: '#0d47a1'},
+    house: {fill: 'rgba(30, 136, 229, 0.18)', stroke: '#1976d2'},
+    room: {fill: 'rgba(76, 175, 80, 0.2)', stroke: '#2e7d32'},
+    roomText: {fill: 'rgba(165, 214, 167, 0.35)', stroke: '#1b5e20'},
+    table: {fill: 'rgba(255, 160, 0, 0.32)', stroke: '#ef6c00'},
+    plate: {fill: 'rgba(126, 87, 194, 0.75)', stroke: '#ede7f6'},
+  },
+  {
+    city: {fill: 'rgba(255, 99, 71, 0.12)', stroke: '#b71c1c'},
+    house: {fill: 'rgba(255, 202, 40, 0.2)', stroke: '#ff8f00'},
+    room: {fill: 'rgba(121, 134, 203, 0.25)', stroke: '#283593'},
+    roomText: {fill: 'rgba(244, 143, 177, 0.3)', stroke: '#ad1457'},
+    table: {fill: 'rgba(0, 188, 212, 0.32)', stroke: '#006064'},
+    plate: {fill: 'rgba(142, 36, 170, 0.75)', stroke: '#f3e5f5'},
+  },
+];
+
+let cityPaletteIndex = 0;
+let cityStyles = createCityStyles(CITY_PALETTES[cityPaletteIndex]);
+
+function createCityStyles(palette) {
+  return {
+    city: new Style({
+      fill: new Fill({color: palette.city.fill}),
+      stroke: new Stroke({color: palette.city.stroke, width: 2}),
     }),
-  }),
-};
+    house: new Style({
+      fill: new Fill({color: palette.house.fill}),
+      stroke: new Stroke({color: palette.house.stroke, width: 1.3}),
+    }),
+    room: new Style({
+      fill: new Fill({color: palette.room.fill}),
+      stroke: new Stroke({color: palette.room.stroke, width: 1}),
+    }),
+    roomText: new Style({
+      fill: new Fill({color: palette.roomText.fill}),
+      stroke: new Stroke({color: palette.roomText.stroke, width: 1}),
+    }),
+    table: new Style({
+      fill: new Fill({color: palette.table.fill}),
+      stroke: new Stroke({color: palette.table.stroke, width: 1}),
+    }),
+    plate: new Style({
+      image: new CircleStyle({
+        radius: 3,
+        fill: new Fill({color: palette.plate.fill}),
+        stroke: new Stroke({color: palette.plate.stroke, width: 0.8}),
+      }),
+    }),
+  };
+}
 
 const styleFunction = (feature) => {
+  if (feature.get('selected')) {
+    return selectedStyle;
+  }
   const level = feature.get('level');
   if (level && cityStyles[level]) {
     return cityStyles[level];
@@ -141,6 +183,21 @@ const map = new Map({
     zoom: 15,
   }),
 });
+const dragPanInteraction =
+  map
+    .getInteractions()
+    .getArray()
+    .find((interaction) => interaction instanceof DragPan) || null;
+const dragBoxInteraction = new DragBox({
+  condition: () => getActiveMode() === 'select',
+});
+map.addInteraction(dragBoxInteraction);
+dragBoxInteraction.on('boxstart', () => {
+  if (getActiveMode() === 'select') {
+    setEditingStatusMessage('Dragging selection box...');
+  }
+});
+dragBoxInteraction.on('boxend', handleBoxSelection);
 
 const vexToggle = document.getElementById('use-vex');
 const zoomButton = document.getElementById('zoom-features');
@@ -151,6 +208,21 @@ const cityCountValue = document.getElementById('city-count-value');
 const cityApplyButton = document.getElementById('city-apply');
 const cityExtendInput = document.getElementById('city-extend');
 const generationStatus = document.getElementById('generation-status');
+const recolorButton = document.getElementById('recolor-cities');
+const editingToggle = document.getElementById('editing-enabled');
+const modeSelect = document.getElementById('interaction-mode');
+const editingStatus = document.getElementById('editing-status');
+const rendererDebug = document.getElementById('renderer-debug');
+window.vexEditingToggle = editingToggle;
+let isEditMode = editingToggle ? editingToggle.checked : true;
+let interactionMode = modeSelect ? modeSelect.value : 'select';
+let vectorLayer = null;
+
+const DEFAULT_RENDERER_SWITCH_ZOOM = 16;
+if (typeof window !== 'undefined' && typeof window.vexRendererSwitchZoom !== 'number') {
+  window.vexRendererSwitchZoom = DEFAULT_RENDERER_SWITCH_ZOOM;
+}
+updateRendererDebug();
 
 const DEFAULT_MAX_CITIES = 50;
 const EXTENDED_MAX_CITIES = 200;
@@ -191,14 +263,18 @@ const STRUCTURED_COUNT =
   BASE_FEATURE_COUNTS.tables;
 
 const PLATES_PER_CITY = Math.max(0, FEATURES_PER_CITY - STRUCTURED_COUNT);
+mountVectorLayer(vexToggle ? vexToggle.checked : true);
 
-let vectorLayer = createVectorLayer(vexToggle.checked);
-map.addLayer(vectorLayer);
+map.getView().on('change:resolution', () => {
+  updateRendererDebug();
+});
 
-vexToggle.addEventListener('change', () => {
-  map.removeLayer(vectorLayer);
-  vectorLayer = createVectorLayer(vexToggle.checked);
-  map.addLayer(vectorLayer);
+map.on('moveend', () => {
+  updateRendererDebug();
+});
+
+vexToggle?.addEventListener('change', () => {
+  mountVectorLayer(vexToggle.checked);
 });
 
 zoomButton.addEventListener('click', () => {
@@ -217,6 +293,7 @@ addFeaturesButton.addEventListener('click', () => {
 });
 
 clearLayerButton.addEventListener('click', () => {
+  applySelection([]);
   vectorLayer.clear();
 });
 
@@ -232,18 +309,172 @@ cityExtendInput?.addEventListener('change', () => {
 });
 
 cityApplyButton?.addEventListener('click', regenerateSyntheticCities);
+recolorButton?.addEventListener('click', () => {
+  cycleCityPalette();
+});
+editingToggle?.addEventListener('change', () => {
+  isEditMode = editingToggle.checked;
+  applyInteractionState();
+});
+modeSelect?.addEventListener('change', () => {
+  interactionMode = modeSelect.value;
+  applyInteractionState();
+});
 
 applySliderLimit();
 updateCityCountLabel();
 reportGenerationReady();
+applyInteractionState();
+
+function cycleCityPalette() {
+  cityPaletteIndex = (cityPaletteIndex + 1) % CITY_PALETTES.length;
+  cityStyles = createCityStyles(CITY_PALETTES[cityPaletteIndex]);
+  mountVectorLayer(vexToggle ? vexToggle.checked : true);
+  if (generationStatus) {
+    generationStatus.textContent = `Updated synthetic district palette #${
+      cityPaletteIndex + 1
+    }. Scene rebuilt with the new colors.`;
+  }
+}
+
+function mountVectorLayer(useVex) {
+  if (vectorLayer) {
+    map.removeLayer(vectorLayer);
+  }
+  vectorLayer = createVectorLayer(useVex);
+  map.addLayer(vectorLayer);
+  updateRendererDebug();
+  applyInteractionState();
+}
+
+function applyInteractionState() {
+  const activeMode = getActiveMode();
+  if (editingToggle) {
+    editingToggle.checked = isEditMode;
+  }
+  if (modeSelect && interactionMode !== modeSelect.value) {
+    modeSelect.value = interactionMode;
+  }
+  dragPanInteraction?.setActive(activeMode === 'view');
+  dragBoxInteraction.setActive(activeMode === 'select');
+  setEditingStatusMessage(
+    activeMode === 'select'
+      ? 'Selection mode active. Drag a box to select features fully inside it.'
+      : 'View mode enabled. Use the mouse to pan the map.',
+  );
+}
+
+function getActiveMode() {
+  if (!isEditMode) {
+    return 'view';
+  }
+  return interactionMode;
+}
+
+function handleBoxSelection() {
+  if (getActiveMode() !== 'select') {
+    return;
+  }
+  const geometry = dragBoxInteraction.getGeometry();
+  if (!geometry) {
+    return;
+  }
+  const extent = geometry.getExtent();
+  const hits = [];
+  vectorSource.forEachFeatureIntersectingExtent(extent, (feature) => {
+    const featureGeometry = feature.getGeometry();
+    if (!featureGeometry) {
+      return;
+    }
+    const featureExtent = featureGeometry.getExtent();
+    if (containsExtent(extent, featureExtent)) {
+      hits.push(feature);
+    }
+  });
+  applySelection(hits);
+}
+
+function applySelection(features) {
+  selectedFeatures.forEach((feature) => {
+    feature.set('selected', false);
+  });
+  selectedFeatures.clear();
+  if (features.length) {
+    features.forEach((feature) => {
+      feature.set('selected', true);
+      selectedFeatures.add(feature);
+    });
+  }
+  refreshLayerCache();
+  const count = features.length;
+  setEditingStatusMessage(
+    count
+      ? `Selected ${count.toLocaleString()} feature${
+          count === 1 ? '' : 's'
+        }. Highlighted in magenta.`
+      : 'No features within the dragged area.',
+  );
+}
+
+function setEditingStatusMessage(message) {
+  if (editingStatus) {
+    editingStatus.textContent = message;
+  }
+}
+
+function getRendererSwitchZoom() {
+  if (vectorLayer && typeof vectorLayer.getVexSwitchZoom === 'function') {
+    // Prefer OL's adaptive threshold when available.
+    return vectorLayer.getVexSwitchZoom();
+  }
+  const value =
+    typeof window !== 'undefined'
+      ? Number(window.vexRendererSwitchZoom)
+      : NaN;
+  return Number.isFinite(value) ? value : DEFAULT_RENDERER_SWITCH_ZOOM;
+}
+
+function updateRendererDebug() {
+  if (!rendererDebug) {
+    return;
+  }
+  const view = map.getView();
+  const zoomValue = view ? view.getZoom() : null;
+  const zoomText =
+    typeof zoomValue === 'number' ? zoomValue.toFixed(2) : 'unavailable';
+  const threshold = getRendererSwitchZoom();
+  const rendererHint =
+    typeof vectorLayer?.getActiveRendererHint === 'function'
+      ? vectorLayer.getActiveRendererHint()
+      : vexToggle && vexToggle.checked
+        ? 'vex'
+        : 'canvas';
+  const readableRenderer = rendererHint === 'vex' ? 'Vex' : 'Canvas';
+  rendererDebug.textContent = `Renderer: ${readableRenderer} (${zoomText}/${threshold})`;
+}
+
+function refreshLayerCache() {
+  if (!vectorLayer) {
+    return;
+  }
+  if (typeof vectorLayer.invalidateRendererCache === 'function') {
+    vectorLayer.invalidateRendererCache();
+  } else {
+    vectorLayer.changed();
+  }
+  vectorSource?.changed();
+}
+
 
 function createVectorLayer(useVex) {
-  const layer = new VectorLayer({
-    rendererHint: useVex ? 'vex' : 'canvas',
+  const layerOptions = {
     source: vectorSource,
     style: styleFunction,
     opacity: 0.95,
-  });
+  };
+  const layer = useVex
+    ? new VexVectorLayer(layerOptions)
+    : new VectorLayer(layerOptions);
   if (typeof layer.addFeatures !== 'function') {
     layer.addFeatures = function addFeatures(features) {
       const source = this.getSource();
@@ -638,6 +869,7 @@ function regenerateSyntheticCities() {
       syntheticFeatures.push(...features);
       extent = extendExtent(extent, bounds);
     }
+    applySelection([]);
     vectorSource.clear(true);
     vectorSource.addFeatures(initialFeatures.concat(syntheticFeatures));
     const totalRendered = initialFeatures.length + syntheticFeatures.length;
