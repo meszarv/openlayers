@@ -6,24 +6,7 @@ import CanvasVectorLayerRenderer from '../renderer/canvas/VectorLayer.js';
 import VexVectorLayerRenderer from '../renderer/vex/VectorLayer.js';
 import BaseVectorLayer from './BaseVector.js';
 
-//TODO: expose this value as parameter
-const DEFAULT_VEX_SWITCH_ZOOM = 7;
-window.vexRendererSwitchZoom = DEFAULT_VEX_SWITCH_ZOOM;
-
-/**
- * @return {number} The zoom where the renderer switches from Vex to Canvas.
- */
-function getVexRendererSwitchZoom() {
-  if (
-    typeof window === 'undefined' ||
-    !window ||
-    typeof window.vexRendererSwitchZoom === 'undefined'
-  ) {
-    return DEFAULT_VEX_SWITCH_ZOOM;
-  }
-  const value = Number(window.vexRendererSwitchZoom);
-  return Number.isFinite(value) ? value : DEFAULT_VEX_SWITCH_ZOOM;
-}
+const DEFAULT_VEX_SWITCH_ZOOM = 10;
 
 /**
  * @template {import("../source/Vector.js").default<FeatureType>} [VectorSourceType=import("../source/Vector.js").default<*>]
@@ -76,7 +59,7 @@ function getVexRendererSwitchZoom() {
  * @property {Object<string, *>} [properties] Arbitrary observable properties. Can be accessed with `#get()` and `#set()`.
  * @property {'canvas'|'vex'} [rendererHint='canvas'] Experimental renderer selection.
  * When set to `'vex'`, the layer automatically switches back to canvas rendering when the view zoom
- * is greater than or equal to `window.vexRendererSwitchZoom` (defaults to `16` when unset).
+ * is greater than or equal to an internal threshold (default `7`).
  */
 
 /**
@@ -178,7 +161,7 @@ class VectorLayer extends BaseVectorLayer {
    * @return {number} Zoom level where the renderer switches from Vex to Canvas.
    */
   getVexSwitchZoom() {
-    return getVexRendererSwitchZoom();
+    return DEFAULT_VEX_SWITCH_ZOOM;
   }
 
   /**
@@ -327,7 +310,7 @@ class VectorLayer extends BaseVectorLayer {
     if (typeof zoom !== 'number') {
       return 'vex';
     }
-    const threshold = getVexRendererSwitchZoom();
+    const threshold = DEFAULT_VEX_SWITCH_ZOOM;
     return zoom < threshold ? 'vex' : 'canvas';
   }
 

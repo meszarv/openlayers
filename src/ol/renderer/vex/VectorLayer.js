@@ -18,25 +18,12 @@ import {
 import {getUid} from '../../util.js';
 import LayerRenderer from '../Layer.js';
 
-const DEFAULT_VEX_SCENE_METERS_PER_PIXEL = 1000;
-if (
-  typeof window !== 'undefined' &&
-  window &&
-  typeof window.vexSceneMetersPerPixel === 'undefined'
-) {
-  window.vexSceneMetersPerPixel = DEFAULT_VEX_SCENE_METERS_PER_PIXEL;
-}
+const DEFAULT_VEX_SCENE_METERS_PER_PIXEL = 100;
 
 /**
  * @return {number} Current scene meters-per-pixel preference.
  */
 function getVexSceneMetersPerPixel() {
-  if (typeof window !== 'undefined' && window) {
-    const value = Number(window.vexSceneMetersPerPixel);
-    if (Number.isFinite(value) && value > 0) {
-      return value;
-    }
-  }
   return DEFAULT_VEX_SCENE_METERS_PER_PIXEL;
 }
 /**
@@ -358,8 +345,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
    */
   computeSceneResolution_(frameState) {
     const projection = frameState.viewState.projection;
-    const metersPerUnit =
-      (projection && projection.getMetersPerUnit()) || 1;
+    const metersPerUnit = (projection && projection.getMetersPerUnit()) || 1;
     const targetMetersPerPixel = getVexSceneMetersPerPixel();
     const resolution = targetMetersPerPixel / metersPerUnit;
     return resolution > 0 ? resolution : frameState.viewState.resolution;

@@ -218,11 +218,7 @@ let isEditMode = editingToggle ? editingToggle.checked : true;
 let interactionMode = modeSelect ? modeSelect.value : 'select';
 let vectorLayer = null;
 
-const DEFAULT_RENDERER_SWITCH_ZOOM = 16;
-if (typeof window !== 'undefined' && typeof window.vexRendererSwitchZoom !== 'number') {
-  window.vexRendererSwitchZoom = DEFAULT_RENDERER_SWITCH_ZOOM;
-}
-updateRendererDebug();
+
 
 const DEFAULT_MAX_CITIES = 50;
 const EXTENDED_MAX_CITIES = 200;
@@ -265,13 +261,6 @@ const STRUCTURED_COUNT =
 const PLATES_PER_CITY = Math.max(0, FEATURES_PER_CITY - STRUCTURED_COUNT);
 mountVectorLayer(vexToggle ? vexToggle.checked : true);
 
-map.getView().on('change:resolution', () => {
-  updateRendererDebug();
-});
-
-map.on('moveend', () => {
-  updateRendererDebug();
-});
 
 vexToggle?.addEventListener('change', () => {
   mountVectorLayer(vexToggle.checked);
@@ -343,7 +332,6 @@ function mountVectorLayer(useVex) {
   }
   vectorLayer = createVectorLayer(useVex);
   map.addLayer(vectorLayer);
-  updateRendererDebug();
   applyInteractionState();
 }
 
@@ -422,36 +410,6 @@ function setEditingStatusMessage(message) {
   }
 }
 
-function getRendererSwitchZoom() {
-  if (vectorLayer && typeof vectorLayer.getVexSwitchZoom === 'function') {
-    // Prefer OL's adaptive threshold when available.
-    return vectorLayer.getVexSwitchZoom();
-  }
-  const value =
-    typeof window !== 'undefined'
-      ? Number(window.vexRendererSwitchZoom)
-      : NaN;
-  return Number.isFinite(value) ? value : DEFAULT_RENDERER_SWITCH_ZOOM;
-}
-
-function updateRendererDebug() {
-  if (!rendererDebug) {
-    return;
-  }
-  const view = map.getView();
-  const zoomValue = view ? view.getZoom() : null;
-  const zoomText =
-    typeof zoomValue === 'number' ? zoomValue.toFixed(2) : 'unavailable';
-  const threshold = getRendererSwitchZoom();
-  const rendererHint =
-    typeof vectorLayer?.getActiveRendererHint === 'function'
-      ? vectorLayer.getActiveRendererHint()
-      : vexToggle && vexToggle.checked
-        ? 'vex'
-        : 'canvas';
-  const readableRenderer = rendererHint === 'vex' ? 'Vex' : 'Canvas';
-  rendererDebug.textContent = `Renderer: ${readableRenderer} (${zoomText}/${threshold})`;
-}
 
 function refreshLayerCache() {
   if (!vectorLayer) {

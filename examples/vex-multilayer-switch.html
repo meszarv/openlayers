@@ -9,11 +9,6 @@ docs: >
   many layers share pooled contexts.
 tags: "vector,experimental"
 ---
-<script>
-  setTimeout(() => {
-    window.vexRendererSwitchZoom = 10;
-    window.vexSceneMetersPerPixel = 10;
-  }, 2000);
 </script>
 <div id="map" class="map multi-vex-map"></div>
 <section class="multi-vex-controls">
@@ -49,8 +44,8 @@ tags: "vector,experimental"
   <p>
     Each vector layer hosts ~20 randomized points with unique styling so you can easily spot
     redraw issues or ghosting artifacts as you pan and zoom. The automatic mode keeps Vex active
-    while zoomed out, then lets the shared canvas renderer take over when crossing
-    <code>window.vexRendererSwitchZoom</code>.
+    while zoomed out, then lets the shared canvas renderer take over when passing its built-in
+    switch threshold.
   </p>
   <p>
     Toggle between the two modes to verify that pooled canvases stay responsive and that the
