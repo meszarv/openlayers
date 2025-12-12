@@ -158,7 +158,7 @@ const extraPlateSource = new VectorSource();
 const extraPlateLayer = new VectorLayer({
   source: extraPlateSource,
   style: styleForFeature,
-  // className: 'ol-layer',
+  className: 'ol-layer',
 });
 extraPlateLayer.setZIndex(1e6);
 let layerClassCounter = 0;
@@ -172,7 +172,7 @@ function createVectorLayer() {
   return new VectorLayer({
     source: new VectorSource(),
     style: styleForFeature,
-    // className: nextLayerClassName(),
+    className: nextLayerClassName(),
   });
 }
 
