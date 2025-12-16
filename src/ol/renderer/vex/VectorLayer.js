@@ -532,7 +532,11 @@ class VexVectorLayerRenderer extends LayerRenderer {
       Number.isFinite(zoomX) && Number.isFinite(zoomY)
         ? (zoomX + zoomY) / 2
         : 1;
+    const devicePixelRatio = window.devicePixelRatio
     const safeZoom = zoom === 0 ? 1 : zoom;
+    // const x = deltaTransform[4]/devicePixelRatio;
+    // const y = deltaTransform[5]/devicePixelRatio;
+    // console.log("updateSceneView",{x,y,zoom,devicePixelRatio})
     const x = deltaTransform[4];
     const y = deltaTransform[5];
 
@@ -605,7 +609,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
     this.ensureSceneState_(frameState);
     // console.debug("VEX PREPARE FRAME scene state ensured");
     if(this.dirty){
-    // console.log("VEX PREPARE FRAME dirty");
+    console.log("VEX PREPARE FRAME dirty");
       this.dirty=false;
       const features = source.getFeatures();
     // console.log("VEX PREPARE FRAME ",{features});
@@ -616,7 +620,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
     // console.log("VEX PREPARE FRAME commit");
       }
     } else {
-      // console.debug("VEX PREPARE FRAME not dirty");
+      console.debug("VEX PREPARE FRAME not dirty",frameState);
     }
     this.updateSceneView_(frameState);
 
@@ -627,9 +631,13 @@ class VexVectorLayerRenderer extends LayerRenderer {
    * @override
    */
   renderFrame(frameState, target) {
+    // if(!window.layerCounter) window.layerCounter=0;
+    // if(!target.layerNumber) target.layerNumber=window.layerCounter++;
+    // if(!this.container_.layerNumber) this.container_.layerNumber = window.layerCounter++;
     this.dispatchRenderEvent_(RenderEventType.PRERENDER, frameState);
     this.dispatchRenderEvent_(RenderEventType.POSTRENDER, frameState);
-    if (target && target !== this.container_) {
+
+    if (target && target !== this.container_.parentNode) {
       const parent = target.parentNode;
       if (parent) {
         parent.replaceChild(this.container_, target);
