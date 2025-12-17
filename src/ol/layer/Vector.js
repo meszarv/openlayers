@@ -6,7 +6,7 @@ import CanvasVectorLayerRenderer from '../renderer/canvas/VectorLayer.js';
 import VexVectorLayerRenderer from '../renderer/vex/VectorLayer.js';
 import BaseVectorLayer from './BaseVector.js';
 
-const DEFAULT_VEX_SWITCH_ZOOM = 3;
+const DEFAULT_VEX_SWITCH_ZOOM = 7;
 
 /**
  * @template {import("../source/Vector.js").default<FeatureType>} [VectorSourceType=import("../source/Vector.js").default<*>]

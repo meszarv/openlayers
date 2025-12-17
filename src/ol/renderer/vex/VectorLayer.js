@@ -18,7 +18,7 @@ import {
 import {getUid} from '../../util.js';
 import LayerRenderer from '../Layer.js';
 
-const DEFAULT_VEX_SCENE_METERS_PER_PIXEL = 100;
+const DEFAULT_VEX_SCENE_METERS_PER_PIXEL = 1000;
 
 /**
  * @return {number} Current scene meters-per-pixel preference.
