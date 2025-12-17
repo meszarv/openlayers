@@ -1,33 +1,34 @@
-/**
- * @module ol/render/vex/context_real
- */
+const DEFAULT_WORKER_PATH = '/vex/jswrapper/vex.worker.js';
+const DEFAULT_SCRIPT_PATH = '/vex/jswrapper/vex.js';
 
-const WORKER_PATH = '/vex/jswrapper/vex.worker.js';
-const SCRIPT_PATH = '/vex/jswrapper/vex.js';
-
+let initPromise = Promise.resolve();
 let scriptPromise = null;
 
-/**
- * Load the Vex GPU script once per page.
- * @return {Promise<void>}
- */
-function ensureVexScriptLoaded() {
+function ensureScriptIsLoaded(){
+  // Ensure vex is running in browser
   if (typeof window === 'undefined') {
     return Promise.reject(
       new Error('Vex GPU is not available outside the browser environment.'),
     );
   }
+
+  // if vex is already loaded skip initialization sequence
   if (typeof window.initVexGPU === 'function') {
     return Promise.resolve();
   }
+
+  //If script is already being initialized return promise to wait for it
   if (scriptPromise) {
     return scriptPromise;
   }
+
+  //Otherwise try to load script
   scriptPromise = new Promise((resolve, reject) => {
     const script = document.createElement('script');
-    script.src = SCRIPT_PATH;
+    script.src = window.vexScriptPath || DEFAULT_SCRIPT_PATH;
     script.async = true;
     script.onload = () => {
+      console.log("VEX SCRIPT LOADED");
       if (typeof window.initVexGPU === 'function') {
         resolve();
       } else {
@@ -42,8 +43,9 @@ function ensureVexScriptLoaded() {
   return scriptPromise;
 }
 
-function ensureSceneViewHelpers(context) {
+function applyScene(context) {
   let lastSceneView = [0, 0, 1];
+
   const originalSetSceneView =
     typeof context.setSceneView === 'function'
       ? context.setSceneView.bind(context)
@@ -57,28 +59,41 @@ function ensureSceneViewHelpers(context) {
       originalSetSceneView(safeX, safeY, safeZoom);
     }
   };
+
   if (typeof context.getSceneView !== 'function') {
     context.getSceneView = () => lastSceneView.slice();
   }
+  
   return context;
 }
 
-/**
- * @param {HTMLCanvasElement} canvas Canvas element.
- * @return {Promise<import('./context_mock.js').VexContext>} Vex context promise.
- */
-export function createVexContext(canvas) {
-  return ensureVexScriptLoaded().then(() => {
-    if (typeof window.initVexGPU !== 'function') {
-      throw new Error('initVexGPU is not available after loading the script.');
-    }
-    return window
-      .initVexGPU(canvas, {
-        interactive: false,
-        workerScriptPath: WORKER_PATH,
-      })
-      .then((context) => ensureSceneViewHelpers(context));
-  });
+export function createVexContext(canvas){
+  //create promise chain
+  const oldPromise = initPromise;
+  initPromise = new Promise((resolve) => {
+    oldPromise.then(()=>{
+        //wait for vex.js to be loaded
+        ensureScriptIsLoaded().catch((e)=>{
+            throw e;
+        }).then(()=>{
+            //if script is loaded, but there is no init function, script is corrupted
+            if (typeof window.initVexGPU !== 'function') {
+                throw new Error('initVexGPU is not available after loading the script.');
+            }
+
+            //initVexGPU is ran only if chain is resolved
+            window.initVexGPU(canvas, {
+                interactive: false,
+                workerScriptPath: window.vexWorkerPath || DEFAULT_WORKER_PATH,
+            }).then(context => {
+                //pre-process scene before resolve
+                resolve(applyScene(context));
+            })
+        });
+    })
+  })
+
+  return initPromise;
 }
 
 export default createVexContext;
