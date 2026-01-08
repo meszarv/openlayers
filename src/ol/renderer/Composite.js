@@ -435,6 +435,7 @@ class CompositeMapRenderer extends MapRenderer {
    */
   buildLayerGroups_(layerStates) {
     const groups = [];
+    const MAX_GROUP_SIZE = 50;
     /** @type {{shareable: boolean, shareType: 'canvas'|'vex'|null, host: import('../layer/Layer.js').State|null, layers: Array<import('../layer/Layer.js').State>}|null} */
     let currentGroup = null;
     for (let i = 0; i < layerStates.length; ++i) {
@@ -447,6 +448,7 @@ class CompositeMapRenderer extends MapRenderer {
         currentGroup.shareable &&
         currentGroup.shareType === shareType &&
         currentGroup.host &&
+        currentGroup.layers.length < MAX_GROUP_SIZE &&
         this.areLayerStatesCompatible_(currentGroup.host, layerState);
       if (compatible) {
         currentGroup.layers.push(layerState);
