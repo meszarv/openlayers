@@ -90,6 +90,20 @@ class VexVectorLayerRenderer extends LayerRenderer {
     this.recordedFeatureUids_ = new Set();
 
     /**
+     * Tracks features that should never be rendered at the configured zoom threshold.
+     * @type {Set<string>}
+     * @private
+     */
+    this.culledFeatureUids_ = new Set();
+
+    /**
+     * Keeps track of features that already had their cull size computed.
+     * @type {Set<string>}
+     * @private
+     */
+    this.cullEvaluatedUids_ = new Set();
+
+    /**
      * @type {import('../events').EventsKey|null}
      * @private
      */
@@ -183,6 +197,20 @@ class VexVectorLayerRenderer extends LayerRenderer {
      * @private
      */
     this.activeSharedSceneIsHost_ = true;
+
+    /**
+     * Cached zoom threshold preference in meters-per-pixel.
+     * @type {number}
+     * @private
+     */
+    this.sceneThresholdMetersPerPixel_ = getVexSceneMetersPerPixel();
+
+    /**
+     * Cached meters-per-unit for the current projection so we know when to recompute size.
+     * @type {number}
+     * @private
+     */
+    this.metersPerUnit_ = 1;
   }
 
   /**
@@ -190,6 +218,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
    */
   invalidateCache() {
     this.recordedFeatureUids_.clear();
+    this.cullEvaluatedUids_.clear();
     if (this.vexContext_) {
       this.requestSharedContextClear_();
     }
@@ -201,6 +230,9 @@ class VexVectorLayerRenderer extends LayerRenderer {
    */
   handleSourceFeature_(event) {
     this.dirty=true
+    if (event && event.feature) {
+      this.evaluateFeatureCull_(event.feature);
+    }
     this.getLayer().changed();
   }
 
@@ -209,6 +241,8 @@ class VexVectorLayerRenderer extends LayerRenderer {
    */
   handleSourceClear_() {
     this.recordedFeatureUids_.clear();
+    this.culledFeatureUids_.clear();
+    this.cullEvaluatedUids_.clear();
     if (this.vexContext_) {
       this.requestSharedContextClear_();
     }
@@ -594,6 +628,79 @@ class VexVectorLayerRenderer extends LayerRenderer {
   }
 
   /**
+   * @param {import('../../Map.js').FrameState} frameState Frame state.
+   * @private
+   */
+  refreshCullParameters_(frameState) {
+    const threshold = getVexSceneMetersPerPixel();
+    const projection = frameState.viewState.projection;
+    const metersPerUnit = (projection && projection.getMetersPerUnit()) || 1;
+    if (
+      threshold !== this.sceneThresholdMetersPerPixel_ ||
+      metersPerUnit !== this.metersPerUnit_
+    ) {
+      this.sceneThresholdMetersPerPixel_ = threshold;
+      this.metersPerUnit_ = metersPerUnit;
+      this.culledFeatureUids_.clear();
+      this.cullEvaluatedUids_.clear();
+      this.recordedFeatureUids_.clear();
+    }
+  }
+
+  /**
+   * @return {number} Map-units per pixel for the threshold zoom.
+   * @private
+   */
+  getThresholdResolution_() {
+    const metersPerUnit = this.metersPerUnit_ || 1;
+    const metersPerPixel = this.sceneThresholdMetersPerPixel_ || 1;
+    return metersPerPixel / metersPerUnit;
+  }
+
+  /**
+   * Evaluate whether a feature is too small to render at the zoom threshold.
+   * @param {import('../../Feature.js').FeatureLike} feature Feature.
+   * @private
+   */
+  evaluateFeatureCull_(feature) {
+    if (!feature) {
+      return;
+    }
+    const uid = getUid(feature);
+    if (this.cullEvaluatedUids_.has(uid)) {
+      return;
+    }
+    const geometry = feature.getGeometry();
+    if (!geometry) {
+      this.cullEvaluatedUids_.add(uid);
+      return;
+    }
+    const extent = geometry.getExtent();
+    if (!extent || extent[0] > extent[2] || extent[1] > extent[3]) {
+      this.cullEvaluatedUids_.add(uid);
+      return;
+    }
+    const thresholdResolution = this.getThresholdResolution_();
+    const width = extent[2] - extent[0];
+    const height = extent[3] - extent[1];
+    let maxPixelSize = 0;
+    if (thresholdResolution > 0) {
+      const pixelWidth = width / thresholdResolution;
+      const pixelHeight = height / thresholdResolution;
+      maxPixelSize = Math.max(pixelWidth, pixelHeight);
+    }
+    if (!Number.isFinite(maxPixelSize)) {
+      maxPixelSize = 0;
+    }
+    if (maxPixelSize < 1) {
+      this.culledFeatureUids_.add(uid);
+    } else {
+      this.culledFeatureUids_.delete(uid);
+    }
+    this.cullEvaluatedUids_.add(uid);
+  }
+
+  /**
    * @param {Array<import('../../Feature.js').FeatureLike>} features Features.
    * @param {import('../../Map.js').FrameState} frameState Frame state.
    * @return {boolean} True when something was rendered.
@@ -631,6 +738,11 @@ class VexVectorLayerRenderer extends LayerRenderer {
       }
       const geometry = feature.getGeometry();
       if (!geometry) {
+        this.recordedFeatureUids_.add(uid);
+        continue;
+      }
+      this.evaluateFeatureCull_(feature);
+      if (this.culledFeatureUids_.has(uid)) {
         this.recordedFeatureUids_.add(uid);
         continue;
       }
@@ -774,6 +886,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
    * @override
    */
   prepareFrame(frameState) {
+    this.refreshCullParameters_(frameState);
     const layer = this.getLayer();
     const source = layer.getSource();
     // console.log("VEX PREPARE FRAME ",{source});
