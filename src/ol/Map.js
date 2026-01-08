@@ -81,6 +81,16 @@ import {getUid} from './util.js';
  *   layers: Array<import("./layer/Layer.js").State>,
  *   manager: import("./renderer/canvas/SharedVectorCanvas.js").default
  * }>|null} sharedLayerGroupLookup Lookup by layer uid for shared render groups.
+ * @property {Array<{
+ *   renderer: import("./renderer/vex/VectorLayer.js").default,
+ *   layers: Array<import("./layer/Layer.js").State>,
+ *   manager: import("./renderer/vex/SharedScene.js").default
+ * }>|null} sharedVexLayerGroups Vex vector layers that share a render surface.
+ * @property {Map<string, {
+ *   renderer: import("./renderer/vex/VectorLayer.js").default,
+ *   layers: Array<import("./layer/Layer.js").State>,
+ *   manager: import("./renderer/vex/SharedScene.js").default
+ * }>|null} sharedVexLayerGroupLookup Lookup by layer uid for shared Vex render groups.
  */
 
 /**
@@ -1604,6 +1614,8 @@ class Map extends BaseObject {
         frameBudget: this.frameBudget_,
         sharedLayerGroups: null,
         sharedLayerGroupLookup: null,
+        sharedVexLayerGroups: null,
+        sharedVexLayerGroupLookup: null,
       };
       if (viewState.nextCenter && viewState.nextResolution) {
         const rotation = isNaN(viewState.nextRotation)

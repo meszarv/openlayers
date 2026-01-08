@@ -17,6 +17,7 @@ import {
 } from '../../transform.js';
 import {getUid} from '../../util.js';
 import LayerRenderer from '../Layer.js';
+import SharedVexScene from './SharedScene.js';
 
 const DEFAULT_VEX_SCENE_METERS_PER_PIXEL = 1000;
 
@@ -149,6 +150,39 @@ class VexVectorLayerRenderer extends LayerRenderer {
      * @private
      */
     this.canvasPixelHeight_ = 0;
+
+    /**
+     * @type {SharedVexScene|null}
+     * @private
+     */
+    this.sharedSceneManager_ = null;
+
+    /**
+     * @type {{manager: SharedVexScene, isHost: boolean, frameId: number}|null}
+     * @private
+     */
+    this.sharedSceneFrameInfo_ = null;
+
+    /**
+     * @type {number}
+     * @private
+     */
+    this.sharedSceneEpoch_ = NaN;
+
+    /**
+     * Tracks the manager this renderer interacted with most recently so cache
+     * invalidations can request remote clears between frames.
+     * @type {SharedVexScene|null}
+     * @private
+     */
+    this.activeSharedSceneManager_ = null;
+
+    /**
+     * Whether the last shared scene attachment treated this renderer as host.
+     * @type {boolean}
+     * @private
+     */
+    this.activeSharedSceneIsHost_ = true;
   }
 
   /**
@@ -157,7 +191,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
   invalidateCache() {
     this.recordedFeatureUids_.clear();
     if (this.vexContext_) {
-      this.vexContext_.clear();
+      this.requestSharedContextClear_();
     }
   }
 
@@ -176,7 +210,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
   handleSourceClear_() {
     this.recordedFeatureUids_.clear();
     if (this.vexContext_) {
-      this.vexContext_.clear();
+      this.requestSharedContextClear_();
     }
     this.getLayer().changed();
   }
@@ -251,6 +285,175 @@ class VexVectorLayerRenderer extends LayerRenderer {
     if (source) {
       this.attachSourceListener_(source);
     }
+  }
+
+  /**
+   * Lazily create the shared scene manager for this renderer.
+   * @return {SharedVexScene}
+   */
+  getSharedSceneManager() {
+    if (!this.sharedSceneManager_) {
+      this.sharedSceneManager_ = new SharedVexScene(this);
+    }
+    return this.sharedSceneManager_;
+  }
+
+  /**
+   * @param {import('../../Map.js').FrameState} frameState Frame state.
+   * @return {import('../../layer/Layer.js').State|null} Matching layer state.
+   * @private
+   */
+  lookupLayerState_(frameState) {
+    if (!frameState || !frameState.layerStatesArray) {
+      return null;
+    }
+    const layer = this.getLayer();
+    if (
+      typeof frameState.layerIndex === 'number' &&
+      frameState.layerStatesArray[frameState.layerIndex] &&
+      frameState.layerStatesArray[frameState.layerIndex].layer === layer
+    ) {
+      return frameState.layerStatesArray[frameState.layerIndex];
+    }
+    const states = frameState.layerStatesArray;
+    for (let i = 0; i < states.length; ++i) {
+      if (states[i].layer === layer) {
+        return states[i];
+      }
+    }
+    return null;
+  }
+
+  /**
+   * @param {import('../../Map.js').FrameState} frameState Frame state.
+   * @return {{
+   *   renderer: LayerRenderer,
+   *   layers: Array<import('../../layer/Layer.js').State>,
+   *   manager: SharedVexScene
+   * }|null}
+   * @private
+   */
+  getSharedGroup_(frameState) {
+    const lookup = frameState ? frameState.sharedVexLayerGroupLookup : null;
+    if (!lookup) {
+      return null;
+    }
+    const uid = getUid(this.getLayer());
+    return lookup.get(uid) ?? null;
+  }
+
+  /**
+   * Resolve the manager + role for this frame.
+   * @param {import('../../Map.js').FrameState} frameState Frame state.
+   * @param {import('../../layer/Layer.js').State|null} layerState Layer state.
+   * @return {{manager: SharedVexScene, isHost: boolean}|null}
+   * @private
+   */
+  getSharedSceneContextInfo_(frameState, layerState) {
+    const sharedGroup = frameState ? this.getSharedGroup_(frameState) : null;
+    if (sharedGroup && sharedGroup.manager) {
+      return {
+        manager: sharedGroup.manager,
+        isHost: sharedGroup.renderer === this,
+      };
+    }
+    const fallbackManager = this.getSharedSceneManager();
+    fallbackManager.reset(frameState, layerState ? [layerState] : undefined);
+    return {
+      manager: fallbackManager,
+      isHost: true,
+    };
+  }
+
+  /**
+   * Attach this renderer to the shared scene for the current frame.
+   * @param {import('../../Map.js').FrameState} frameState Frame state.
+   * @return {{manager: SharedVexScene, isHost: boolean}|null}
+   * @private
+   */
+  beginSharedSceneFrame_(frameState) {
+    if (!frameState) {
+      this.sharedSceneFrameInfo_ = null;
+      this.activeSharedSceneManager_ = null;
+      return null;
+    }
+    if (
+      this.sharedSceneFrameInfo_ &&
+      this.sharedSceneFrameInfo_.frameId === frameState.time
+    ) {
+      return this.sharedSceneFrameInfo_;
+    }
+    const layerState = this.lookupLayerState_(frameState);
+    const info = this.getSharedSceneContextInfo_(frameState, layerState);
+    if (!info || !info.manager) {
+      this.sharedSceneFrameInfo_ = null;
+      this.activeSharedSceneManager_ = null;
+      return null;
+    }
+    if (info.isHost) {
+      info.manager.beginFrame(frameState);
+    } else {
+      info.manager.ensureHostReady(frameState);
+    }
+    info.manager.attachLayer(this);
+    this.sharedSceneFrameInfo_ = {
+      manager: info.manager,
+      isHost: info.isHost,
+      frameId: frameState.time,
+    };
+    this.activeSharedSceneManager_ = info.manager;
+    this.activeSharedSceneIsHost_ =
+      info.isHost || info.manager === this.sharedSceneManager_;
+    this.applySharedEpoch_(info.manager);
+    return info;
+  }
+
+  /**
+   * Detach from any shared scene after a frame completes.
+   * @private
+   */
+  endSharedSceneFrame_() {
+    if (this.sharedSceneFrameInfo_ && this.sharedSceneFrameInfo_.manager) {
+      this.sharedSceneFrameInfo_.manager.detachLayer(this);
+    }
+    this.sharedSceneFrameInfo_ = null;
+  }
+
+  /**
+   * Reset cached recordings when the shared context was cleared externally.
+   * @param {SharedVexScene} manager Scene manager.
+   * @private
+   */
+  applySharedEpoch_(manager) {
+    if (!manager) {
+      return;
+    }
+    const epoch = manager.getEpoch();
+    if (this.sharedSceneEpoch_ !== epoch) {
+      this.sharedSceneEpoch_ = epoch;
+      this.recordedFeatureUids_.clear();
+      this.dirty = true;
+    }
+  }
+
+  /**
+   * Request that the shared context clears before the next recording cycle.
+   * @private
+   */
+  requestSharedContextClear_() {
+    const manager = this.activeSharedSceneManager_;
+    if (manager && !this.activeSharedSceneIsHost_) {
+      manager.requestContextClear();
+      this.sharedSceneEpoch_ = manager.getEpoch();
+      this.recordedFeatureUids_.clear();
+      this.dirty = true;
+      return;
+    }
+    if (this.vexContext_) {
+      this.vexContext_.clear();
+    }
+    this.recordedFeatureUids_.clear();
+    this.dirty = true;
   }
 
   /**
@@ -385,7 +588,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
     if (hadScene) {
       this.recordedFeatureUids_.clear();
       if (this.vexContext_) {
-        this.vexContext_.clear();
+        this.requestSharedContextClear_();
       }
     }
   }
@@ -576,9 +779,11 @@ class VexVectorLayerRenderer extends LayerRenderer {
     // console.log("VEX PREPARE FRAME ",{source});
     if (!source) {
     // console.debug("VEX PREPARE FRAME no source");
+      this.endSharedSceneFrame_();
       return false;
     }
 
+    const sharedInfo = this.beginSharedSceneFrame_(frameState);
     this.resizeCanvas_(frameState);
     // console.debug("VEX PREPARE FRAME canvas resized");
     this.ensureVexContext_();
@@ -588,7 +793,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
 
     if (!this.vexContext_) {
     // console.debug("VEX PREPARE FRAME no context");
-      return true;
+      return !!sharedInfo;
     }
     // console.debug("VEX PREPARE FRAME context exists");
 
@@ -620,16 +825,22 @@ class VexVectorLayerRenderer extends LayerRenderer {
     // if(!window.layerCounter) window.layerCounter=0;
     // if(!target.layerNumber) target.layerNumber=window.layerCounter++;
     // if(!this.container_.layerNumber) this.container_.layerNumber = window.layerCounter++;
+    const sharedInfo = this.sharedSceneFrameInfo_;
+    const sharedManager = sharedInfo ? sharedInfo.manager : null;
     this.dispatchRenderEvent_(RenderEventType.PRERENDER, frameState);
     this.dispatchRenderEvent_(RenderEventType.POSTRENDER, frameState);
 
-    if (target && target !== this.container_.parentNode) {
+    const outputElement =
+      (sharedManager && sharedManager.getContainer()) || this.container_;
+
+    if (target && target !== outputElement.parentNode) {
       const parent = target.parentNode;
       if (parent) {
-        parent.replaceChild(this.container_, target);
+        parent.replaceChild(outputElement, target);
       }
     }
-    return this.container_;
+    this.endSharedSceneFrame_();
+    return outputElement;
   }
 
   /**

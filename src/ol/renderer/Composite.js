@@ -13,6 +13,7 @@ import {checkedFonts} from '../render/canvas.js';
 import {getUid} from '../util.js';
 import MapRenderer from './Map.js';
 import CanvasVectorLayerRenderer from './canvas/VectorLayer.js';
+import VexVectorLayerRenderer from './vex/VectorLayer.js';
 
 /**
  * @typedef {Object} LayerStateSummary
@@ -20,6 +21,7 @@ import CanvasVectorLayerRenderer from './canvas/VectorLayer.js';
  * @property {number} zIndex
  * @property {boolean} visible
  * @property {boolean} shareable
+ * @property {'canvas'|'vex'|null} shareType
  * @property {string} className
  * @property {boolean|string|number|undefined} declutter
  * @property {*} background
@@ -107,6 +109,18 @@ class CompositeMapRenderer extends MapRenderer {
      * @type {Map<string, {renderer: CanvasVectorLayerRenderer, layers: Array<import('../layer/Layer.js').State>, manager: import('./canvas/SharedVectorCanvas.js').default}>|null}
      */
     this.sharedLayerGroupLookupCache_ = null;
+
+    /**
+     * @private
+     * @type {Array<{renderer: VexVectorLayerRenderer, layers: Array<import('../layer/Layer.js').State>, manager: import('./vex/SharedScene.js').default}>|null}
+     */
+    this.sharedVexLayerGroupsCache_ = null;
+
+    /**
+     * @private
+     * @type {Map<string, {renderer: VexVectorLayerRenderer, layers: Array<import('../layer/Layer.js').State>, manager: import('./vex/SharedScene.js').default}>|null}
+     */
+    this.sharedVexLayerGroupLookupCache_ = null;
   }
 
   /**
@@ -137,8 +151,9 @@ class CompositeMapRenderer extends MapRenderer {
       ) {
         return false;
       }
-      const shareable = this.isShareableVectorLayer_(layerState);
-      if (cached.shareable !== shareable) {
+      const shareType = this.getLayerShareType_(layerState);
+      const shareable = !!shareType;
+      if (cached.shareable !== shareable || cached.shareType !== shareType) {
         return false;
       }
       if (!shareable) {
@@ -175,22 +190,38 @@ class CompositeMapRenderer extends MapRenderer {
    */
   rebuildSharedLayerGroupsCache_(frameState, layerStates) {
     const layerGroups = this.buildLayerGroups_(layerStates);
-    const sharedLayerGroups = this.extractSharedLayerGroups_(layerGroups);
-    if (sharedLayerGroups.length > 0) {
+    const {canvas, vex} = this.extractSharedLayerGroups_(layerGroups);
+    if (canvas.length > 0) {
       const lookup = new Map();
-      for (let i = 0; i < sharedLayerGroups.length; ++i) {
-        const entry = sharedLayerGroups[i];
+      for (let i = 0; i < canvas.length; ++i) {
+        const entry = canvas[i];
         entry.manager.reset(frameState, entry.layers);
         for (let j = 0; j < entry.layers.length; ++j) {
           const uid = getUid(entry.layers[j].layer);
           lookup.set(uid, entry);
         }
       }
-      this.sharedLayerGroupsCache_ = sharedLayerGroups;
+      this.sharedLayerGroupsCache_ = canvas;
       this.sharedLayerGroupLookupCache_ = lookup;
     } else {
       this.sharedLayerGroupsCache_ = null;
       this.sharedLayerGroupLookupCache_ = null;
+    }
+    if (vex.length > 0) {
+      const lookup = new Map();
+      for (let i = 0; i < vex.length; ++i) {
+        const entry = vex[i];
+        entry.manager.reset(frameState, entry.layers);
+        for (let j = 0; j < entry.layers.length; ++j) {
+          const uid = getUid(entry.layers[j].layer);
+          lookup.set(uid, entry);
+        }
+      }
+      this.sharedVexLayerGroupsCache_ = vex;
+      this.sharedVexLayerGroupLookupCache_ = lookup;
+    } else {
+      this.sharedVexLayerGroupsCache_ = null;
+      this.sharedVexLayerGroupLookupCache_ = null;
     }
     this.layerStateSummaryCache_ = this.createLayerStateSummary_(layerStates);
   }
@@ -206,12 +237,14 @@ class CompositeMapRenderer extends MapRenderer {
     for (let i = 0; i < layerStates.length; ++i) {
       const layerState = layerStates[i];
       const layer = layerState.layer;
-      const shareable = this.isShareableVectorLayer_(layerState);
+      const shareType = this.getLayerShareType_(layerState);
+      const shareable = !!shareType;
       summary[i] = {
         uid: getUid(layer),
         zIndex: layerState.zIndex ?? 0,
         visible: !!layerState.visible,
         shareable,
+        shareType,
         className: layer.getClassName(),
         declutter:
           shareable && typeof layer.getDeclutter === 'function'
@@ -329,6 +362,14 @@ class CompositeMapRenderer extends MapRenderer {
       frameState.sharedLayerGroups = null;
       frameState.sharedLayerGroupLookup = null;
     }
+    const sharedVexGroups = this.sharedVexLayerGroupsCache_;
+    if (sharedVexGroups && sharedVexGroups.length > 0) {
+      frameState.sharedVexLayerGroups = sharedVexGroups;
+      frameState.sharedVexLayerGroupLookup = this.sharedVexLayerGroupLookupCache_;
+    } else {
+      frameState.sharedVexLayerGroups = null;
+      frameState.sharedVexLayerGroupLookup = null;
+    }
     const declutter = layerStatesArray.some(
       (layerState) =>
         layerState.layer instanceof BaseVectorLayer &&
@@ -389,20 +430,22 @@ class CompositeMapRenderer extends MapRenderer {
   /**
    * Group layer states that can share a render surface.
    * @param {Array<import('../layer/Layer.js').State>} layerStates Layer states.
-   * @return {Array<{shareable: boolean, host: import('../layer/Layer.js').State|null, layers: Array<import('../layer/Layer.js').State>}>}
+   * @return {Array<{shareable: boolean, shareType: 'canvas'|'vex'|null, host: import('../layer/Layer.js').State|null, layers: Array<import('../layer/Layer.js').State>}>}
    * @private
    */
   buildLayerGroups_(layerStates) {
     const groups = [];
-    /** @type {{shareable: boolean, host: import('../layer/Layer.js').State|null, layers: Array<import('../layer/Layer.js').State>}|null} */
+    /** @type {{shareable: boolean, shareType: 'canvas'|'vex'|null, host: import('../layer/Layer.js').State|null, layers: Array<import('../layer/Layer.js').State>}|null} */
     let currentGroup = null;
     for (let i = 0; i < layerStates.length; ++i) {
       const layerState = layerStates[i];
-      const shareable = this.isShareableVectorLayer_(layerState);
+      const shareType = this.getLayerShareType_(layerState);
+      const shareable = !!shareType;
       const compatible =
         shareable &&
         currentGroup &&
         currentGroup.shareable &&
+        currentGroup.shareType === shareType &&
         currentGroup.host &&
         this.areLayerStatesCompatible_(currentGroup.host, layerState);
       if (compatible) {
@@ -411,6 +454,7 @@ class CompositeMapRenderer extends MapRenderer {
       }
       currentGroup = {
         shareable,
+        shareType: shareable ? shareType : null,
         host: shareable ? layerState : null,
         layers: [layerState],
       };
@@ -420,18 +464,33 @@ class CompositeMapRenderer extends MapRenderer {
   }
 
   /**
+   * @param {import('../layer/Layer.js').State} layerState Layer state.
+   * @return {'canvas'|'vex'|null} Share type identifier.
+   * @private
+   */
+  getLayerShareType_(layerState) {
+    const layer = layerState.layer;
+    if (!(layer instanceof BaseVectorLayer)) {
+      return null;
+    }
+    const renderer = layer.hasRenderer() ? layer.getRenderer() : null;
+    if (renderer instanceof CanvasVectorLayerRenderer) {
+      return 'canvas';
+    }
+    if (renderer instanceof VexVectorLayerRenderer) {
+      return 'vex';
+    }
+    return null;
+  }
+
+  /**
    * Decide if a layer state may participate in shared canvas rendering.
    * @param {import('../layer/Layer.js').State} layerState Layer state.
    * @return {boolean}
    * @private
    */
   isShareableVectorLayer_(layerState) {
-    const layer = layerState.layer;
-    if (!(layer instanceof BaseVectorLayer)) {
-      return false;
-    }
-    const renderer = layer.hasRenderer() ? layer.getRenderer() : null;
-    return renderer instanceof CanvasVectorLayerRenderer;
+    return this.getLayerShareType_(layerState) === 'canvas';
   }
 
   /**
@@ -476,26 +535,43 @@ class CompositeMapRenderer extends MapRenderer {
 
   /**
    * Extract shared layer group metadata for the current frame.
-   * @param {Array<{shareable: boolean, host: import('../layer/Layer.js').State|null, layers: Array<import('../layer/Layer.js').State>}>} groups Groups.
-   * @return {Array<{renderer: CanvasVectorLayerRenderer, layers: Array<import('../layer/Layer.js').State>, manager: import('./canvas/SharedVectorCanvas.js').default}>}
+   * @param {Array<{shareable: boolean, shareType: 'canvas'|'vex'|null, host: import('../layer/Layer.js').State|null, layers: Array<import('../layer/Layer.js').State>}>} groups Groups.
+   * @return {{
+   *   canvas: Array<{renderer: CanvasVectorLayerRenderer, layers: Array<import('../layer/Layer.js').State>, manager: import('./canvas/SharedVectorCanvas.js').default}>,
+   *   vex: Array<{renderer: VexVectorLayerRenderer, layers: Array<import('../layer/Layer.js').State>, manager: import('./vex/SharedScene.js').default}>
+   * }}
    * @private
    */
   extractSharedLayerGroups_(groups) {
-    const shared = [];
+    const shared = {
+      canvas: [],
+      vex: [],
+    };
     for (let i = 0; i < groups.length; ++i) {
       const group = groups[i];
-      if (!group.shareable || !group.host || group.layers.length === 0) {
+      if (!group.shareable || !group.shareType || !group.host || group.layers.length === 0) {
         continue;
       }
       const renderer = group.host.layer.getRenderer();
-      if (!(renderer instanceof CanvasVectorLayerRenderer)) {
-        continue;
+      if (group.shareType === 'canvas') {
+        if (!(renderer instanceof CanvasVectorLayerRenderer)) {
+          continue;
+        }
+        shared.canvas.push({
+          renderer,
+          layers: group.layers.slice(),
+          manager: renderer.getSharedCanvasManager(),
+        });
+      } else if (group.shareType === 'vex') {
+        if (!(renderer instanceof VexVectorLayerRenderer)) {
+          continue;
+        }
+        shared.vex.push({
+          renderer,
+          layers: group.layers.slice(),
+          manager: renderer.getSharedSceneManager(),
+        });
       }
-      shared.push({
-        renderer,
-        layers: group.layers.slice(),
-        manager: renderer.getSharedCanvasManager(),
-      });
     }
     return shared;
   }
@@ -506,12 +582,17 @@ class CompositeMapRenderer extends MapRenderer {
    * @private
    */
   executeSharedDraws_(frameState) {
-    const groups = frameState.sharedLayerGroups;
-    if (!groups) {
-      return;
+    const canvasGroups = frameState.sharedLayerGroups;
+    if (canvasGroups) {
+      for (let i = 0; i < canvasGroups.length; ++i) {
+        canvasGroups[i].manager.draw();
+      }
     }
-    for (let i = 0; i < groups.length; ++i) {
-      groups[i].manager.draw();
+    const vexGroups = frameState.sharedVexLayerGroups;
+    if (vexGroups) {
+      for (let i = 0; i < vexGroups.length; ++i) {
+        vexGroups[i].manager.draw();
+      }
     }
   }
 
