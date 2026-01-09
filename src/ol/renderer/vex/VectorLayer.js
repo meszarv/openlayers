@@ -462,7 +462,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
   disposeInternal() {
     this.detachSourceListener_();
     this.container_.remove();
-    if (!this.canvas_.__olOffscreenTransferred) {
+    if (!this.canvas_.getAttribute('vexgpu')) {
       this.canvas_.width = 0;
       this.canvas_.height = 0;
     }
@@ -484,7 +484,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
     if (sizeChanged) {
       this.canvasPixelWidth_ = width;
       this.canvasPixelHeight_ = height;
-      const canResizeHtmlCanvas = !this.canvas_.__olOffscreenTransferred;
+      const canResizeHtmlCanvas = !this.canvas_.getAttribute('vexgpu');
       if (canResizeHtmlCanvas) {
         this.canvas_.width = width;
         this.canvas_.height = height;
