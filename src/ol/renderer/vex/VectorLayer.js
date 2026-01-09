@@ -20,6 +20,7 @@ import LayerRenderer from '../Layer.js';
 import SharedVexScene from './SharedScene.js';
 
 const DEFAULT_VEX_SCENE_METERS_PER_PIXEL = 1000;
+const SMALL_FEATURE_FLAG = Symbol('ol-vex-skip-small');
 
 /**
  * @return {number} Current scene meters-per-pixel preference.
@@ -183,6 +184,27 @@ class VexVectorLayerRenderer extends LayerRenderer {
      * @private
      */
     this.activeSharedSceneIsHost_ = true;
+
+    /**
+     * Cached zoom threshold preference in meters-per-pixel.
+     * @type {number}
+     * @private
+     */
+    this.sceneThresholdMetersPerPixel_ = getVexSceneMetersPerPixel();
+
+    /**
+     * Cached meters-per-unit for the active projection when the minimal size was last computed.
+     * @type {number|null}
+     * @private
+     */
+    this.sceneThresholdMetersPerUnit_ = null;
+
+    /**
+     * Minimal feature size (in map units) that results in >=1px at the threshold zoom.
+     * @type {number}
+     * @private
+     */
+    this.minimalItemSize_ = 0;
   }
 
   /**
@@ -200,7 +222,10 @@ class VexVectorLayerRenderer extends LayerRenderer {
    * @private
    */
   handleSourceFeature_(event) {
-    this.dirty=true
+    this.dirty = true;
+    if (event && event.feature) {
+      this.flagFeatureIfTooSmall_(event.feature);
+    }
     this.getLayer().changed();
   }
 
@@ -594,6 +619,110 @@ class VexVectorLayerRenderer extends LayerRenderer {
   }
 
   /**
+   * Update the cached minimal item size when the threshold zoom settings change.
+   * @param {import('../../proj/Projection.js').default} projection Projection.
+   * @return {boolean} True when the minimal size changed.
+   * @private
+   */
+  maybeUpdateMinimalItemSize_(projection) {
+    const metersPerUnit = (projection && projection.getMetersPerUnit()) || 1;
+    const thresholdMetersPerPixel = getVexSceneMetersPerPixel();
+    const safeMetersPerUnit = metersPerUnit > 0 ? metersPerUnit : 1;
+    const nextMinimalItemSize = thresholdMetersPerPixel / safeMetersPerUnit;
+    const changed =
+      this.sceneThresholdMetersPerPixel_ !== thresholdMetersPerPixel ||
+      this.sceneThresholdMetersPerUnit_ !== metersPerUnit ||
+      !Number.isFinite(this.minimalItemSize_) ||
+      this.minimalItemSize_ !== nextMinimalItemSize;
+    if (!changed) {
+      return false;
+    }
+    this.sceneThresholdMetersPerPixel_ = thresholdMetersPerPixel;
+    this.sceneThresholdMetersPerUnit_ = metersPerUnit;
+    this.minimalItemSize_ = nextMinimalItemSize;
+    return true;
+  }
+
+  /**
+   * Flag features that fall below the minimal map-unit size required for rendering.
+   * @param {import('../../Feature.js').FeatureLike} feature Feature to check.
+   * @private
+   */
+  flagFeatureIfTooSmall_(feature) {
+    if (!feature || typeof feature.getGeometry !== 'function') {
+      return;
+    }
+    const geometry = feature.getGeometry();
+    if (!geometry || typeof geometry.getExtent !== 'function') {
+      return;
+    }
+    const threshold = this.minimalItemSize_;
+    if (!Number.isFinite(threshold) || threshold <= 0) {
+      if (feature[SMALL_FEATURE_FLAG]) {
+        delete feature[SMALL_FEATURE_FLAG];
+      }
+      return;
+    }
+    const extent = geometry.getExtent();
+    if (!extent) {
+      return;
+    }
+    const width = extent[2] - extent[0];
+    const height = extent[3] - extent[1];
+    const widthTooSmall =
+      Number.isFinite(width) && width >= 0 && width < threshold;
+    const heightTooSmall =
+      Number.isFinite(height) && height >= 0 && height < threshold;
+    if (widthTooSmall || heightTooSmall) {
+      feature[SMALL_FEATURE_FLAG] = true;
+    } else if (feature[SMALL_FEATURE_FLAG]) {
+      delete feature[SMALL_FEATURE_FLAG];
+    }
+  }
+
+  /**
+   * @param {import('../../Feature.js').FeatureLike} feature Feature to inspect.
+   * @return {boolean} True if the feature is flagged to skip rendering.
+   * @private
+   */
+  featureIsFlaggedSmall_(feature) {
+    return !!(feature && feature[SMALL_FEATURE_FLAG]);
+  }
+
+  /**
+   * Re-evaluate the small-feature flag for all source features.
+   * @param {import('../../source/Vector.js').default} source Source.
+   * @private
+   */
+  reflagAllFeatures_(source) {
+    if (!source || typeof source.getFeatures !== 'function') {
+      return;
+    }
+    const features = source.getFeatures();
+    if (!Array.isArray(features) || !features.length) {
+      return;
+    }
+    let changedAny = false;
+    for (const feature of features) {
+      const before = this.featureIsFlaggedSmall_(feature);
+      this.flagFeatureIfTooSmall_(feature);
+      const after = this.featureIsFlaggedSmall_(feature);
+      if (before !== after) {
+        changedAny = true;
+      }
+    }
+    if (!changedAny) {
+      return;
+    }
+    this.recordedFeatureUids_.clear();
+    if (this.vexContext_) {
+      this.requestSharedContextClear_();
+    }
+    this.dirty = true;
+    this.getLayer().changed();
+  }
+
+  /**
    * @param {Array<import('../../Feature.js').FeatureLike>} features Features.
    * @param {import('../../Map.js').FrameState} frameState Frame state.
    * @return {boolean} True when something was rendered.
@@ -627,6 +756,10 @@ class VexVectorLayerRenderer extends LayerRenderer {
     for (const feature of features) {
       const uid = getUid(feature);
       if (this.recordedFeatureUids_.has(uid)) {
+        continue;
+      }
+      if (this.featureIsFlaggedSmall_(feature)) {
+        this.recordedFeatureUids_.add(uid);
         continue;
       }
       const geometry = feature.getGeometry();
@@ -776,6 +909,14 @@ class VexVectorLayerRenderer extends LayerRenderer {
   prepareFrame(frameState) {
     const layer = this.getLayer();
     const source = layer.getSource();
+    if (frameState && frameState.viewState) {
+      const thresholdChanged = this.maybeUpdateMinimalItemSize_(
+        frameState.viewState.projection,
+      );
+      if (thresholdChanged && source) {
+        this.reflagAllFeatures_(source);
+      }
+    }
     // console.log("VEX PREPARE FRAME ",{source});
     if (!source) {
     // console.debug("VEX PREPARE FRAME no source");
