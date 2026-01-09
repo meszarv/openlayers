@@ -20,7 +20,8 @@ import LayerRenderer from '../Layer.js';
 import SharedVexScene from './SharedScene.js';
 
 const DEFAULT_VEX_SCENE_METERS_PER_PIXEL = 1000;
-const SMALL_FEATURE_FLAG = Symbol('ol-vex-skip-small');
+const FEATURE_POOL_RENDERABLE = 1;
+const FEATURE_POOL_SMALL = 2;
 
 /**
  * @return {number} Current scene meters-per-pixel preference.
@@ -91,10 +92,44 @@ class VexVectorLayerRenderer extends LayerRenderer {
     this.recordedFeatureUids_ = new Set();
 
     /**
+     * Features eligible for VEX rendering.
+     * @type {Set<import('../../Feature.js').FeatureLike>}
+     * @private
+     */
+    this.renderableFeatures_ = new Set();
+
+    /**
+     * Features considered too small for the VEX renderer.
+     * @type {Set<import('../../Feature.js').FeatureLike>}
+     * @private
+     */
+    this.smallFeatures_ = new Set();
+
+    /**
+     * Tracks each feature's current pool assignment.
+     * @type {Map<string, number>}
+     * @private
+     */
+    this.featurePoolIndex_ = new Map();
+
+    /**
+     * Change listener keys per feature for geometry updates.
+     * @type {Map<string, import('../events').EventsKey>}
+     * @private
+     */
+    this.featureChangeListenerKeys_ = new Map();
+
+    /**
      * @type {import('../events').EventsKey|null}
      * @private
      */
     this.featureListenerKey_ = null;
+
+    /**
+     * @type {import('../events').EventsKey|null}
+     * @private
+     */
+    this.removeListenerKey_ = null;
 
     /**
      * @type {import('../events').EventsKey|null}
@@ -222,10 +257,11 @@ class VexVectorLayerRenderer extends LayerRenderer {
    * @private
    */
   handleSourceFeature_(event) {
-    this.dirty = true;
-    if (event && event.feature) {
-      this.flagFeatureIfTooSmall_(event.feature);
+    const feature = event && event.feature;
+    if (feature) {
+      this.trackFeature_(feature);
     }
+    this.dirty = true;
     this.getLayer().changed();
   }
 
@@ -233,10 +269,23 @@ class VexVectorLayerRenderer extends LayerRenderer {
    * @private
    */
   handleSourceClear_() {
+    this.untrackAllFeatures_();
     this.recordedFeatureUids_.clear();
-    if (this.vexContext_) {
-      this.requestSharedContextClear_();
+    this.requestSharedContextClear_();
+    this.getLayer().changed();
+  }
+
+  /**
+   * @param {import('../../events/Event.js').default} event Event.
+   * @private
+   */
+  handleSourceRemove_(event) {
+    const feature = event && event.feature;
+    if (!feature) {
+      return;
     }
+    this.untrackFeature_(feature);
+    this.requestSharedContextClear_();
     this.getLayer().changed();
   }
 
@@ -252,6 +301,12 @@ class VexVectorLayerRenderer extends LayerRenderer {
       source,
       VectorSourceEventType.ADDFEATURE,
       this.handleSourceFeature_,
+      this,
+    );
+    this.removeListenerKey_ = listen(
+      source,
+      VectorSourceEventType.REMOVEFEATURE,
+      this.handleSourceRemove_,
       this,
     );
     this.clearListenerKey_ = listen(
@@ -270,10 +325,15 @@ class VexVectorLayerRenderer extends LayerRenderer {
       unlistenByKey(this.featureListenerKey_);
       this.featureListenerKey_ = null;
     }
+    if (this.removeListenerKey_) {
+      unlistenByKey(this.removeListenerKey_);
+      this.removeListenerKey_ = null;
+    }
     if (this.clearListenerKey_) {
       unlistenByKey(this.clearListenerKey_);
       this.clearListenerKey_ = null;
     }
+    this.untrackAllFeatures_();
   }
 
   /**
@@ -309,6 +369,9 @@ class VexVectorLayerRenderer extends LayerRenderer {
     this.currentSource_ = source;
     if (source) {
       this.attachSourceListener_(source);
+      this.rebuildFeaturePoolsFromSource_(source);
+    } else {
+      this.untrackAllFeatures_();
     }
   }
 
@@ -644,28 +707,26 @@ class VexVectorLayerRenderer extends LayerRenderer {
   }
 
   /**
-   * Flag features that fall below the minimal map-unit size required for rendering.
-   * @param {import('../../Feature.js').FeatureLike} feature Feature to check.
+   * Determine if a feature falls below the current minimal map-unit size.
+   * @param {import('../../Feature.js').FeatureLike} feature Feature to evaluate.
+   * @return {boolean} True when feature should be deferred.
    * @private
    */
-  flagFeatureIfTooSmall_(feature) {
+  featureFallsBelowThreshold_(feature) {
     if (!feature || typeof feature.getGeometry !== 'function') {
-      return;
+      return false;
     }
     const geometry = feature.getGeometry();
     if (!geometry || typeof geometry.getExtent !== 'function') {
-      return;
+      return false;
     }
     const threshold = this.minimalItemSize_;
     if (!Number.isFinite(threshold) || threshold <= 0) {
-      if (feature[SMALL_FEATURE_FLAG]) {
-        delete feature[SMALL_FEATURE_FLAG];
-      }
-      return;
+      return false;
     }
     const extent = geometry.getExtent();
     if (!extent) {
-      return;
+      return false;
     }
     const width = extent[2] - extent[0];
     const height = extent[3] - extent[1];
@@ -673,66 +734,182 @@ class VexVectorLayerRenderer extends LayerRenderer {
       Number.isFinite(width) && width >= 0 && width < threshold;
     const heightTooSmall =
       Number.isFinite(height) && height >= 0 && height < threshold;
-    if (widthTooSmall || heightTooSmall) {
-      feature[SMALL_FEATURE_FLAG] = true;
-    } else if (feature[SMALL_FEATURE_FLAG]) {
-      delete feature[SMALL_FEATURE_FLAG];
-    }
+    return widthTooSmall || heightTooSmall;
   }
 
   /**
-   * @param {import('../../Feature.js').FeatureLike} feature Feature to inspect.
-   * @return {boolean} True if the feature is flagged to skip rendering.
+   * Categorize a feature based on the current threshold.
+   * @param {import('../../Feature.js').FeatureLike} feature Feature to check.
+   * @return {number} Pool identifier.
    * @private
    */
-  featureIsFlaggedSmall_(feature) {
-    return !!(feature && feature[SMALL_FEATURE_FLAG]);
+  classifyFeature_(feature) {
+    return this.featureFallsBelowThreshold_(feature)
+      ? FEATURE_POOL_SMALL
+      : FEATURE_POOL_RENDERABLE;
   }
 
   /**
-   * Re-evaluate the small-feature flag for all source features.
-   * @param {import('../../source/Vector.js').default} source Source.
+   * Ensure a feature resides in the correct pool and return if it moved.
+   * @param {import('../../Feature.js').FeatureLike} feature Feature.
+   * @param {number} pool Pool id.
+   * @return {boolean} True if the pool changed.
    * @private
    */
-  reflagAllFeatures_(source) {
-    if (!source || typeof source.getFeatures !== 'function') {
+  assignFeatureToPool_(feature, pool) {
+    if (!feature) {
+      return false;
+    }
+    const uid = getUid(feature);
+    const previous = this.featurePoolIndex_.get(uid);
+    if (previous === pool) {
+      return false;
+    }
+    if (previous === FEATURE_POOL_RENDERABLE) {
+      this.renderableFeatures_.delete(feature);
+    } else if (previous === FEATURE_POOL_SMALL) {
+      this.smallFeatures_.delete(feature);
+    }
+    if (pool === FEATURE_POOL_RENDERABLE) {
+      this.renderableFeatures_.add(feature);
+    } else {
+      this.smallFeatures_.add(feature);
+    }
+    this.featurePoolIndex_.set(uid, pool);
+    if (pool === FEATURE_POOL_SMALL) {
+      this.recordedFeatureUids_.delete(uid);
+    }
+    return true;
+  }
+
+  /**
+   * Begin tracking a feature for pool changes.
+   * @param {import('../../Feature.js').FeatureLike} feature Feature.
+   * @private
+   */
+  trackFeature_(feature) {
+    if (!feature) {
       return;
     }
-    const features = source.getFeatures();
-    if (!Array.isArray(features) || !features.length) {
+    const uid = getUid(feature);
+    if (!this.featureChangeListenerKeys_.has(uid)) {
+      const key = listen(feature, 'change', this.handleFeatureChange_, this);
+      this.featureChangeListenerKeys_.set(uid, key);
+    }
+    this.assignFeatureToPool_(feature, this.classifyFeature_(feature));
+  }
+
+  /**
+   * Handle feature-level change events.
+   * @param {import('../../events/Event.js').default} event Event.
+   * @private
+   */
+  handleFeatureChange_(event) {
+    const feature = event && /** @type {import('../../Feature.js').FeatureLike} */ (event.target);
+    if (!feature) {
       return;
     }
-    let changedAny = false;
-    for (const feature of features) {
-      const before = this.featureIsFlaggedSmall_(feature);
-      this.flagFeatureIfTooSmall_(feature);
-      const after = this.featureIsFlaggedSmall_(feature);
-      if (before !== after) {
-        changedAny = true;
-      }
-    }
-    if (!changedAny) {
-      return;
-    }
-    this.recordedFeatureUids_.clear();
-    if (this.vexContext_) {
-      this.requestSharedContextClear_();
-    }
-    this.dirty = true;
+    this.assignFeatureToPool_(feature, this.classifyFeature_(feature));
+    this.requestSharedContextClear_();
     this.getLayer().changed();
   }
 
   /**
-   * @param {Array<import('../../Feature.js').FeatureLike>} features Features.
+   * Stop tracking a feature and remove it from pools.
+   * @param {import('../../Feature.js').FeatureLike} feature Feature.
+   * @private
+   */
+  untrackFeature_(feature) {
+    if (!feature) {
+      return;
+    }
+    const uid = getUid(feature);
+    const changeKey = this.featureChangeListenerKeys_.get(uid);
+    if (changeKey) {
+      unlistenByKey(changeKey);
+      this.featureChangeListenerKeys_.delete(uid);
+    }
+    const pool = this.featurePoolIndex_.get(uid);
+    if (pool === FEATURE_POOL_RENDERABLE) {
+      this.renderableFeatures_.delete(feature);
+    } else if (pool === FEATURE_POOL_SMALL) {
+      this.smallFeatures_.delete(feature);
+    }
+    this.featurePoolIndex_.delete(uid);
+    this.recordedFeatureUids_.delete(uid);
+  }
+
+  /**
+   * Remove all tracked features and listeners.
+   * @private
+   */
+  untrackAllFeatures_() {
+    for (const key of this.featureChangeListenerKeys_.values()) {
+      unlistenByKey(key);
+    }
+    this.featureChangeListenerKeys_.clear();
+    this.renderableFeatures_.clear();
+    this.smallFeatures_.clear();
+    this.featurePoolIndex_.clear();
+  }
+
+  /**
+   * Rebuild feature pools from the current source content.
+   * @param {import('../../source/Vector.js').default} source Source.
+   * @private
+   */
+  rebuildFeaturePoolsFromSource_(source) {
+    this.untrackAllFeatures_();
+    if (!source || typeof source.getFeatures !== 'function') {
+      return;
+    }
+    const features = source.getFeatures();
+    if (!features || !features.length) {
+      return;
+    }
+    for (const feature of features) {
+      this.trackFeature_(feature);
+    }
+  }
+
+  /**
+   * Re-partition all tracked features after a threshold change.
+   * @private
+   */
+  repartitionAllFeatures_() {
+    const source = this.currentSource_;
+    if (!source || typeof source.getFeatures !== 'function') {
+      return;
+    }
+    const features = source.getFeatures();
+    if (!features || !features.length) {
+      return;
+    }
+    let movedAny = false;
+    for (const feature of features) {
+      const moved = this.assignFeatureToPool_(
+        feature,
+        this.classifyFeature_(feature),
+      );
+      if (moved) {
+        movedAny = true;
+      }
+    }
+    if (!movedAny) {
+      return;
+    }
+    this.requestSharedContextClear_();
+    this.getLayer().changed();
+  }
+
+  /**
+   * @param {Iterable<import('../../Feature.js').FeatureLike>} features Features.
    * @param {import('../../Map.js').FrameState} frameState Frame state.
    * @return {boolean} True when something was rendered.
    * @private
    */
   recordFeatures_(features, frameState) {
     const layer = this.getLayer();
-    if (!features.length) {
-      return false;
-    }
     const viewExtent = frameState.extent;
     const viewState = frameState.viewState;
     let renderExtent = null;
@@ -753,13 +930,11 @@ class VexVectorLayerRenderer extends LayerRenderer {
     let vectorContext = null;
     let recorded = false;
 
+    let sawFeature = false;
     for (const feature of features) {
+      sawFeature = true;
       const uid = getUid(feature);
       if (this.recordedFeatureUids_.has(uid)) {
-        continue;
-      }
-      if (this.featureIsFlaggedSmall_(feature)) {
-        this.recordedFeatureUids_.add(uid);
         continue;
       }
       const geometry = feature.getGeometry();
@@ -807,7 +982,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
       this.recordedFeatureUids_.add(uid);
     }
 
-    return recorded;
+    return sawFeature && recorded;
   }
 
   /**
@@ -909,12 +1084,13 @@ class VexVectorLayerRenderer extends LayerRenderer {
   prepareFrame(frameState) {
     const layer = this.getLayer();
     const source = layer.getSource();
+    this.syncSourceListeners_(source);
     if (frameState && frameState.viewState) {
       const thresholdChanged = this.maybeUpdateMinimalItemSize_(
         frameState.viewState.projection,
       );
       if (thresholdChanged && source) {
-        this.reflagAllFeatures_(source);
+        this.repartitionAllFeatures_();
       }
     }
     // console.log("VEX PREPARE FRAME ",{source});
@@ -929,8 +1105,6 @@ class VexVectorLayerRenderer extends LayerRenderer {
     // console.debug("VEX PREPARE FRAME canvas resized");
     this.ensureVexContext_();
     // console.debug("VEX PREPARE FRAME vex context ensured");
-    this.syncSourceListeners_(source);
-    // console.debug("VEX PREPARE FRAME source listeners synced");
 
     if (!this.vexContext_) {
     // console.debug("VEX PREPARE FRAME no context");
@@ -943,7 +1117,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
     if(this.dirty){
     console.log("VEX PREPARE FRAME dirty");
       this.dirty=false;
-      const features = source.getFeatures();
+      const features = this.renderableFeatures_;
     // console.log("VEX PREPARE FRAME ",{features});
       const recorded = this.recordFeatures_(features, frameState);
     // console.log("VEX PREPARE FRAME ",{recorded});
