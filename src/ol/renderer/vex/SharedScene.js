@@ -68,6 +68,13 @@ class SharedVexScene {
      * @private
      */
     this.epoch_ = 0;
+
+    /**
+     * Tracks whether any participant dirtied the shared scene.
+     * @type {boolean}
+     * @private
+     */
+    this.groupDirty_ = false;
   }
 
   /**
@@ -78,6 +85,7 @@ class SharedVexScene {
   reset(frameState, layers) {
     this.participants_ = layers ? layers.slice() : null;
     this.frameId_ = frameState ? frameState.time : 0;
+    this.groupDirty_ = false;
   }
 
   /**
@@ -188,6 +196,22 @@ class SharedVexScene {
     if (context && typeof context.clear === 'function') {
       context.clear();
     }
+  }
+
+  /**
+   * Mark the shared scene dirty so the host redraws.
+   */
+  markSharedDirty() {
+    this.groupDirty_ = true;
+  }
+
+  /**
+   * @return {boolean} Whether the shared scene was dirtied since last check.
+   */
+  consumeSharedDirty() {
+    const dirty = this.groupDirty_;
+    this.groupDirty_ = false;
+    return dirty;
   }
 
   /**

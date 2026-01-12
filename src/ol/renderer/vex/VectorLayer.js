@@ -82,6 +82,12 @@ class VexVectorLayerRenderer extends LayerRenderer {
 
     
     this.dirty = true;
+    /**
+     * Tracks whether this renderer has pending shared-scene dirtiness to propagate.
+     * @type {boolean}
+     * @private
+     */
+    this.pendingSharedGroupDirty_ = true;
 
     /**
      * @type {Set<string>}
@@ -214,7 +220,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
    * @private
    */
   handleSourceFeature_(event) {
-    this.dirty=true
+    this.markDirty_();
     if (event && event.feature) {
       this.applyThresholdCull_(event.feature);
     }
@@ -449,7 +455,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
     if (this.sharedSceneEpoch_ !== epoch) {
       this.sharedSceneEpoch_ = epoch;
       this.recordedFeatureUids_.clear();
-      this.dirty = true;
+      this.markDirty_();
     }
   }
 
@@ -463,14 +469,43 @@ class VexVectorLayerRenderer extends LayerRenderer {
       manager.requestContextClear();
       this.sharedSceneEpoch_ = manager.getEpoch();
       this.recordedFeatureUids_.clear();
-      this.dirty = true;
+      this.markDirty_();
       return;
     }
     if (this.vexContext_) {
       this.vexContext_.clear();
     }
     this.recordedFeatureUids_.clear();
-    this.dirty = true;
+    this.markDirty_();
+  }
+
+  /**
+   * Mark this renderer (and its shared scene) dirty.
+   * @private
+   */
+  markDirty_() {
+    if (!this.dirty) {
+      this.dirty = true;
+    }
+    this.pendingSharedGroupDirty_ = true;
+    this.flushPendingSharedDirty_(this.sharedSceneFrameInfo_);
+  }
+
+  /**
+   * Notify the shared scene manager about pending dirtiness if available.
+   * @param {{manager: SharedVexScene, isHost: boolean}|null} info Shared scene info.
+   * @private
+   */
+  flushPendingSharedDirty_(info) {
+    if (!this.pendingSharedGroupDirty_) {
+      return;
+    }
+    const manager = info && info.manager;
+    if (!manager || typeof manager.markSharedDirty !== 'function') {
+      return;
+    }
+    manager.markSharedDirty();
+    this.pendingSharedGroupDirty_ = false;
   }
 
   /**
@@ -650,7 +685,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
     }
     if (changed) {
       this.recordedFeatureUids_.clear();
-      this.dirty = true;
+      this.markDirty_();
       this.getLayer().changed();
     }
   }
@@ -892,6 +927,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
     }
 
     const sharedInfo = this.beginSharedSceneFrame_(frameState);
+    this.flushPendingSharedDirty_(sharedInfo);
     this.resizeCanvas_(frameState);
     // console.debug("VEX PREPARE FRAME canvas resized");
     this.ensureVexContext_();
@@ -907,19 +943,22 @@ class VexVectorLayerRenderer extends LayerRenderer {
 
     this.ensureSceneState_(frameState);
     // console.debug("VEX PREPARE FRAME scene state ensured");
-    if(this.dirty){
-    console.log("VEX PREPARE FRAME dirty");
-      this.dirty=false;
+    const sharedGroupDirty =
+      sharedInfo &&
+      sharedInfo.isHost &&
+      typeof sharedInfo.manager.consumeSharedDirty === 'function' &&
+      sharedInfo.manager.consumeSharedDirty();
+    const shouldRecord = this.dirty || sharedGroupDirty;
+    if (shouldRecord) {
+      console.log('VEX PREPARE FRAME dirty');
+      this.dirty = false;
       const features = source.getFeatures();
-    // console.log("VEX PREPARE FRAME ",{features});
       const recorded = this.recordFeatures_(features, frameState);
-    // console.log("VEX PREPARE FRAME ",{recorded});
       if (recorded) {
         this.vexContext_.commit();
-    // console.log("VEX PREPARE FRAME commit");
       }
     } else {
-      console.debug("VEX PREPARE FRAME not dirty",frameState);
+      console.debug('VEX PREPARE FRAME not dirty', frameState);
     }
     this.updateSceneView_(frameState);
 
