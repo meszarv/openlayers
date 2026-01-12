@@ -370,10 +370,22 @@ class Layer extends BaseLayer {
   render(frameState, target) {
     const layerRenderer = this.getRenderer();
 
+    if (!layerRenderer) {
+      return null;
+    }
     if (layerRenderer.prepareFrame(frameState)) {
       this.rendered = true;
       return layerRenderer.renderFrame(frameState, target);
     }
+    const fallback =
+      typeof layerRenderer.getRenderTarget === 'function'
+        ? layerRenderer.getRenderTarget()
+        : null;
+    if (fallback) {
+      this.rendered = true;
+      return fallback;
+    }
+    this.rendered = false;
     return null;
   }
 

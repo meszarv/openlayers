@@ -103,6 +103,15 @@ class LayerRenderer extends Observable {
   }
 
   /**
+   * Return the most recent render target so the layer can stay visible when no new render is required.
+   * Subclasses may override.
+   * @return {HTMLElement|null}
+   */
+  getRenderTarget() {
+    return null;
+  }
+
+  /**
    * @abstract
    * @param {import("../coordinate.js").Coordinate} coordinate Coordinate.
    * @param {import("../Map.js").FrameState} frameState Frame state.

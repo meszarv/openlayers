@@ -69,6 +69,13 @@ class VexVectorLayerRenderer extends LayerRenderer {
     this.container_.appendChild(this.canvas_);
 
     /**
+     * Cached render target element from the last successful frame.
+     * @type {HTMLElement|null}
+     * @private
+     */
+    this.lastRenderTarget_ = null;
+
+    /**
      * @type {import('../../render/vex/context.js').VexContext|null}
      * @private
      */
@@ -961,8 +968,11 @@ class VexVectorLayerRenderer extends LayerRenderer {
       console.debug('VEX PREPARE FRAME not dirty', frameState);
     }
     this.updateSceneView_(frameState);
+    if (!shouldRecord) {
+      this.endSharedSceneFrame_();
+    }
 
-    return true;
+    return shouldRecord;
   }
 
   /**
@@ -987,6 +997,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
       }
     }
     this.endSharedSceneFrame_();
+    this.lastRenderTarget_ = outputElement;
     return outputElement;
   }
 
@@ -1019,6 +1030,13 @@ class VexVectorLayerRenderer extends LayerRenderer {
       return;
     }
     layer.changed();
+  }
+
+  /**
+   * @override
+   */
+  getRenderTarget() {
+    return this.lastRenderTarget_;
   }
 }
 
