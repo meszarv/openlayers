@@ -720,6 +720,12 @@ class VexVectorLayerRenderer extends LayerRenderer {
     let vectorContext = null;
     let recorded = false;
 
+    window.cullCounter={
+      culled:0,
+      unculled:0,
+      totalTime:0
+    }
+
     for (const feature of features) {
       const uid = getUid(feature);
       if (this.recordedFeatureUids_.has(uid)) {
@@ -822,7 +828,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
       Number.isFinite(zoomX) && Number.isFinite(zoomY)
         ? (zoomX + zoomY) / 2
         : 1;
-    const devicePixelRatio = window.devicePixelRatio
+    // const devicePixelRatio = window.devicePixelRatio;
     const safeZoom = zoom === 0 ? 1 : zoom;
     // const x = deltaTransform[4]/devicePixelRatio;
     // const y = deltaTransform[5]/devicePixelRatio;
