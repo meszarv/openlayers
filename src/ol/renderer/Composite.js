@@ -443,7 +443,6 @@ class CompositeMapRenderer extends MapRenderer {
    */
   buildLayerGroups_(layerStates) {
     const groups = [];
-    const MAX_GROUP_SIZE = 50;
     const vexLimit = getVexSharedLayerLimit();
     /** @type {{shareable: boolean, shareType: 'canvas'|'vex'|null, host: import('../layer/Layer.js').State|null, layers: Array<import('../layer/Layer.js').State>, vexGroupId?: number}|null} */
     let currentGroup = null;
@@ -463,7 +462,6 @@ class CompositeMapRenderer extends MapRenderer {
         currentGroup.shareType === shareType &&
         (shareType !== 'vex' || currentGroup.vexGroupId === vexGroupId) &&
         currentGroup.host &&
-        (shareType === 'vex' || currentGroup.layers.length < MAX_GROUP_SIZE) &&
         this.areLayerStatesCompatible_(currentGroup.host, layerState);
       if (compatible) {
         currentGroup.layers.push(layerState);
