@@ -49,7 +49,7 @@ import {
 const tmpTransform = createTransform();
 
 /**
- * Lightweight, read-only, {@link module:ol/Feature~Feature} and {@link module:ol/geom/Geometry~Geometry} like
+ * Lightweight, mostly read-only, {@link module:ol/Feature~Feature} and {@link module:ol/geom/Geometry~Geometry} like
  * structure, optimized for vector tile rendering and styling. Geometry access
  * through the API is limited to getting the type and extent of the geometry.
  */
@@ -144,6 +144,15 @@ class RenderFeature {
    */
   get(key) {
     return this.properties_[key];
+  }
+
+  /**
+   * Set a feature property by its key.
+   * @param {string} key Key
+   * @param {*} value Value for the requested key.
+   */
+  set(key, value) {
+    this.properties_[key] = value;
   }
 
   /**
