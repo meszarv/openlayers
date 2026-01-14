@@ -493,13 +493,20 @@ class CompositeMapRenderer extends MapRenderer {
         result.push(group);
         continue;
       }
-      for (let start = 0; start < layers.length; start += limit) {
-        const slice = layers.slice(start, start + limit);
+      const sharedSlice = layers.slice(0, limit);
+      result.push({
+        shareable: true,
+        shareType: 'vex',
+        host: sharedSlice[0],
+        layers: sharedSlice,
+      });
+      for (let i = limit; i < layers.length; ++i) {
+        const layerState = layers[i];
         result.push({
-          shareable: true,
-          shareType: 'vex',
-          host: slice[0],
-          layers: slice,
+          shareable: false,
+          shareType: null,
+          host: null,
+          layers: [layerState],
         });
       }
     }
