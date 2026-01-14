@@ -728,6 +728,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
       width / thresholdResolution,
       height / thresholdResolution,
     );
+    window.cullCounter[(maxPixelSize < 1)?"culled":"unculled"]++;
     feature.set('vexCull', maxPixelSize < 1);
   }
 
@@ -764,8 +765,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
 
     window.cullCounter={
       culled:0,
-      unculled:0,
-      totalTime:0
+      unculled:0
     }
 
     for (const feature of features) {
@@ -822,6 +822,8 @@ class VexVectorLayerRenderer extends LayerRenderer {
       }
       this.recordedFeatureUids_.add(uid);
     }
+
+    // alert(`culled:${window.cullCounter.culled} / unculled:${window.cullCounter.unculled} / total:${window.cullCounter.culled+window.cullCounter.unculled}`)
 
     return recorded;
   }
