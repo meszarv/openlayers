@@ -948,8 +948,6 @@ class VexVectorLayerRenderer extends LayerRenderer {
     }
     // console.debug("VEX PREPARE FRAME context exists");
 
-    this.ensureSceneState_(frameState);
-    // console.debug("VEX PREPARE FRAME scene state ensured");
     const sharedGroupDirty =
       sharedInfo &&
       sharedInfo.isHost &&
@@ -957,6 +955,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
       sharedInfo.manager.consumeSharedDirty();
     const shouldRecord = this.dirty || sharedGroupDirty;
     if (shouldRecord) {
+      this.ensureSceneState_(frameState);
       console.log('VEX PREPARE FRAME dirty');
       this.dirty = false;
       const features = source.getFeatures();
@@ -966,13 +965,12 @@ class VexVectorLayerRenderer extends LayerRenderer {
       }
     } else {
       console.debug('VEX PREPARE FRAME not dirty', frameState);
-    }
-    this.updateSceneView_(frameState);
-    if (!shouldRecord) {
-      this.endSharedSceneFrame_();
+      if (!sharedInfo || !sharedInfo.isHost) {
+        this.endSharedSceneFrame_();
+      }
     }
 
-    return shouldRecord;
+    return true;
   }
 
   /**
@@ -984,6 +982,8 @@ class VexVectorLayerRenderer extends LayerRenderer {
     // if(!this.container_.layerNumber) this.container_.layerNumber = window.layerCounter++;
     const sharedInfo = this.sharedSceneFrameInfo_;
     const sharedManager = sharedInfo ? sharedInfo.manager : null;
+    this.ensureSceneState_(frameState);
+    this.updateSceneView_(frameState);
     this.dispatchRenderEvent_(RenderEventType.PRERENDER, frameState);
     this.dispatchRenderEvent_(RenderEventType.POSTRENDER, frameState);
 
