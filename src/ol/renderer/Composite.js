@@ -14,6 +14,7 @@ import {getUid} from '../util.js';
 import MapRenderer from './Map.js';
 import CanvasVectorLayerRenderer from './canvas/VectorLayer.js';
 import VexVectorLayerRenderer from './vex/VectorLayer.js';
+import {getVexSharedLayerLimit} from '../render/vex/config.js';
 
 /**
  * @typedef {Object} LayerStateSummary
@@ -435,20 +436,29 @@ class CompositeMapRenderer extends MapRenderer {
    */
   buildLayerGroups_(layerStates) {
     const groups = [];
-    const MAX_GROUP_SIZE = 50;
+    const MAX_CANVAS_GROUP_SIZE = 50;
+    const maxVexGroupSize = getVexSharedLayerLimit();
     /** @type {{shareable: boolean, shareType: 'canvas'|'vex'|null, host: import('../layer/Layer.js').State|null, layers: Array<import('../layer/Layer.js').State>}|null} */
     let currentGroup = null;
     for (let i = 0; i < layerStates.length; ++i) {
       const layerState = layerStates[i];
       const shareType = this.getLayerShareType_(layerState);
       const shareable = !!shareType;
+      const currentLimit =
+        currentGroup && currentGroup.shareType === 'vex'
+          ? maxVexGroupSize
+          : MAX_CANVAS_GROUP_SIZE;
+      const hasCapacity =
+        !currentGroup ||
+        currentLimit < 0 ||
+        currentGroup.layers.length < currentLimit;
       const compatible =
         shareable &&
         currentGroup &&
         currentGroup.shareable &&
         currentGroup.shareType === shareType &&
         currentGroup.host &&
-        currentGroup.layers.length < MAX_GROUP_SIZE &&
+        hasCapacity &&
         this.areLayerStatesCompatible_(currentGroup.host, layerState);
       if (compatible) {
         currentGroup.layers.push(layerState);
