@@ -125,6 +125,9 @@ class CompositeMapRenderer extends MapRenderer {
      * @type {Map<string, {renderer: VexVectorLayerRenderer, layers: Array<import('../layer/Layer.js').State>, manager: import('./vex/SharedScene.js').default}>|null}
      */
     this.sharedVexLayerGroupLookupCache_ = null;
+
+    /** @private */
+    this.nextVexGroupIndex_ = 0;
   }
 
   /**
@@ -193,6 +196,7 @@ class CompositeMapRenderer extends MapRenderer {
    * @private
    */
   rebuildSharedLayerGroupsCache_(frameState, layerStates) {
+    this.nextVexGroupIndex_ = 0;
     const layerGroups = this.buildLayerGroups_(layerStates);
     const {canvas, vex} = this.extractSharedLayerGroups_(layerGroups);
     if (canvas.length > 0) {
@@ -448,11 +452,9 @@ class CompositeMapRenderer extends MapRenderer {
       const shareType = this.getLayerShareType_(layerState);
       const shareable = !!shareType;
       let vexGroupId = 0;
-      if (shareable && shareType === 'vex' && vexLimit > 0 && vexLimit !== Infinity) {
-        const className = layerState.layer.getClassName();
-        const currentIndex = this.nextVexGroupIndex_.get(className) || 0;
+      if (shareable && shareType === 'vex' && vexLimit > 0 && Number.isFinite(vexLimit)) {
+        const currentIndex = this.nextVexGroupIndex_++;
         vexGroupId = Math.floor(currentIndex / vexLimit);
-        this.nextVexGroupIndex_.set(className, currentIndex + 1);
       }
       const compatible =
         shareable &&
@@ -461,7 +463,7 @@ class CompositeMapRenderer extends MapRenderer {
         currentGroup.shareType === shareType &&
         (shareType !== 'vex' || currentGroup.vexGroupId === vexGroupId) &&
         currentGroup.host &&
-        currentGroup.layers.length < MAX_GROUP_SIZE &&
+        (shareType === 'vex' || currentGroup.layers.length < MAX_GROUP_SIZE) &&
         this.areLayerStatesCompatible_(currentGroup.host, layerState);
       if (compatible) {
         currentGroup.layers.push(layerState);
