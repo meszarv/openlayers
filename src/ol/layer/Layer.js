@@ -373,9 +373,13 @@ class Layer extends BaseLayer {
     if (!layerRenderer) {
       return null;
     }
-    if (layerRenderer.prepareFrame(frameState)) {
+    const needsRender = layerRenderer.prepareFrame(frameState);
+    if (needsRender) {
       this.rendered = true;
       return layerRenderer.renderFrame(frameState, target);
+    }
+    if (typeof layerRenderer.updateView === 'function') {
+      layerRenderer.updateView(frameState);
     }
     const fallback =
       typeof layerRenderer.getRenderTarget === 'function'

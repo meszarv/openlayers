@@ -946,7 +946,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
 
     if (!this.vexContext_) {
     // console.debug("VEX PREPARE FRAME no context");
-      return !!sharedInfo;
+      return false;
     }
     // console.debug("VEX PREPARE FRAME context exists");
 
@@ -967,12 +967,9 @@ class VexVectorLayerRenderer extends LayerRenderer {
       }
     } else {
       console.debug('VEX PREPARE FRAME not dirty', frameState);
-      if (!sharedInfo || !sharedInfo.isHost) {
-        this.endSharedSceneFrame_();
-      }
     }
 
-    return true;
+    return shouldRecord;
   }
 
   /**
@@ -1001,6 +998,32 @@ class VexVectorLayerRenderer extends LayerRenderer {
     this.endSharedSceneFrame_();
     this.lastRenderTarget_ = outputElement;
     return outputElement;
+  }
+
+  /**
+   * @override
+   */
+  updateView(frameState) {
+    if (!frameState) {
+      this.endSharedSceneFrame_();
+      return;
+    }
+    let sharedInfo = this.sharedSceneFrameInfo_;
+    if (!sharedInfo) {
+      sharedInfo = this.beginSharedSceneFrame_(frameState);
+    }
+    if (!sharedInfo || !this.vexContext_) {
+      this.endSharedSceneFrame_();
+      return;
+    }
+    this.ensureSceneState_(frameState);
+    this.updateSceneView_(frameState);
+    this.endSharedSceneFrame_();
+    if (!this.lastRenderTarget_) {
+      const sharedManager = sharedInfo ? sharedInfo.manager : null;
+      this.lastRenderTarget_ =
+        (sharedManager && sharedManager.getContainer()) || this.container_;
+    }
   }
 
   /**

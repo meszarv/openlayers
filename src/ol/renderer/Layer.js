@@ -112,6 +112,13 @@ class LayerRenderer extends Observable {
   }
 
   /**
+   * Update renderer state for view changes when no new render occurs.
+   * Subclasses can override to adjust transforms without re-rendering.
+   * @param {import('../Map.js').FrameState} frameState Frame state.
+   */
+  updateView(frameState) {}
+
+  /**
    * @abstract
    * @param {import("../coordinate.js").Coordinate} coordinate Coordinate.
    * @param {import("../Map.js").FrameState} frameState Frame state.
