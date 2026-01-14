@@ -190,11 +190,7 @@ class CompositeMapRenderer extends MapRenderer {
    * @private
    */
   rebuildSharedLayerGroupsCache_(frameState, layerStates) {
-    let layerGroups = this.buildLayerGroups_(layerStates);
-    const vexLimit = getVexSharedLayerLimit();
-    if (vexLimit >= 0) {
-      layerGroups = this.splitVexGroups_(layerGroups, vexLimit);
-    }
+    const layerGroups = this.buildLayerGroups_(layerStates);
     const {canvas, vex} = this.extractSharedLayerGroups_(layerGroups);
     if (canvas.length > 0) {
       const lookup = new Map();
@@ -441,17 +437,23 @@ class CompositeMapRenderer extends MapRenderer {
   buildLayerGroups_(layerStates) {
     const groups = [];
     const MAX_GROUP_SIZE = 50;
+    const vexLimit = getVexSharedLayerLimit();
     /** @type {{shareable: boolean, shareType: 'canvas'|'vex'|null, host: import('../layer/Layer.js').State|null, layers: Array<import('../layer/Layer.js').State>}|null} */
     let currentGroup = null;
     for (let i = 0; i < layerStates.length; ++i) {
       const layerState = layerStates[i];
       const shareType = this.getLayerShareType_(layerState);
       const shareable = !!shareType;
+      const vexGroupId =
+        shareable && shareType === 'vex' && vexLimit > 0 && vexLimit !== Infinity
+          ? Math.floor(groups.length / vexLimit)
+          : 0;
       const compatible =
         shareable &&
         currentGroup &&
         currentGroup.shareable &&
         currentGroup.shareType === shareType &&
+        (shareType !== 'vex' || currentGroup.vexGroupId === vexGroupId) &&
         currentGroup.host &&
         currentGroup.layers.length < MAX_GROUP_SIZE &&
         this.areLayerStatesCompatible_(currentGroup.host, layerState);
@@ -464,53 +466,11 @@ class CompositeMapRenderer extends MapRenderer {
         shareType: shareable ? shareType : null,
         host: shareable ? layerState : null,
         layers: [layerState],
+        vexGroupId: shareType === 'vex' ? vexGroupId : undefined,
       };
       groups.push(currentGroup);
     }
     return groups;
-  }
-
-  /**
-   * Split Vex groups so no chunk exceeds the limit.
-   * @param {Array<{shareable: boolean, shareType: 'canvas'|'vex'|null, host: import('../layer/Layer.js').State|null, layers: Array<import('../layer/Layer.js').State>}>} groups
-   * @param {number} limit
-   * @return {Array<{shareable: boolean, shareType: 'canvas'|'vex'|null, host: import('../layer/Layer.js').State|null, layers: Array<import('../layer/Layer.js').State>}>}
-   * @private
-   */
-  splitVexGroups_(groups, limit) {
-    if (limit < 1) {
-      return groups;
-    }
-    const result = [];
-    for (let i = 0; i < groups.length; ++i) {
-      const group = groups[i];
-      if (!group.shareable || group.shareType !== 'vex') {
-        result.push(group);
-        continue;
-      }
-      const layers = group.layers;
-      if (!layers || layers.length <= limit) {
-        result.push(group);
-        continue;
-      }
-      const sharedSlice = layers.slice(0, limit);
-      result.push({
-        shareable: true,
-        shareType: 'vex',
-        host: sharedSlice[0],
-        layers: sharedSlice,
-      });
-      for (let i = limit; i < layers.length; ++i) {
-        const layerState = layers[i];
-        result.push({
-          shareable: false,
-          shareType: null,
-          host: null,
-          layers: [layerState],
-        });
-      }
-    }
-    return result;
   }
 
   /**
