@@ -5,6 +5,10 @@ import {listen, unlistenByKey} from '../events.js';
 import CanvasVectorLayerRenderer from '../renderer/canvas/VectorLayer.js';
 import VexVectorLayerRenderer from '../renderer/vex/VectorLayer.js';
 import BaseVectorLayer from './BaseVector.js';
+import {
+  addVexAutoSwitchChangeListener,
+  isVexAutoSwitchEnabled,
+} from '../render/vex/config.js';
 
 const DEFAULT_VEX_SWITCH_ZOOM = 7;
 
@@ -59,7 +63,8 @@ const DEFAULT_VEX_SWITCH_ZOOM = 7;
  * @property {Object<string, *>} [properties] Arbitrary observable properties. Can be accessed with `#get()` and `#set()`.
  * @property {'canvas'|'vex'} [rendererHint='canvas'] Experimental renderer selection.
  * When set to `'vex'`, the layer automatically switches back to canvas rendering when the view zoom
- * is greater than or equal to an internal threshold (default `7`).
+ * is greater than or equal to an internal threshold (default `7`). This behavior can be toggled
+ * globally via {@link module:ol/render/vex/config~setVexAutoSwitchEnabled}.
  */
 
 /**
@@ -97,7 +102,8 @@ class VectorLayer extends BaseVectorLayer {
      * @type {boolean}
      * @private
      */
-    this.autoVexSwitchEnabled_ = this.rendererHint_ === 'vex';
+    this.autoVexSwitchEnabled_ =
+      this.rendererHint_ === 'vex' && isVexAutoSwitchEnabled();
 
     /**
      * @type {'canvas'|'vex'}
@@ -135,6 +141,18 @@ class VectorLayer extends BaseVectorLayer {
      * @private
      */
     this.cachedVexRenderer_ = null;
+
+    /**
+     * @type {() => void|null}
+     * @private
+     */
+    this.autoVexSwitchListener_ = null;
+
+    if (this.rendererHint_ === 'vex') {
+      this.autoVexSwitchListener_ = addVexAutoSwitchChangeListener(
+        this.handleGlobalAutoSwitchChange_.bind(this),
+      );
+    }
   }
 
   /**
@@ -186,6 +204,10 @@ class VectorLayer extends BaseVectorLayer {
    */
   disposeInternal() {
     this.detachAutoSwitchListeners_();
+    if (this.autoVexSwitchListener_) {
+      this.autoVexSwitchListener_();
+      this.autoVexSwitchListener_ = null;
+    }
     if (this.cachedVexRenderer_) {
       this.cachedVexRenderer_.dispose();
       this.cachedVexRenderer_ = null;
@@ -211,6 +233,30 @@ class VectorLayer extends BaseVectorLayer {
     }
     this.attachAutoSwitchListeners_(attachedMap);
     this.handleViewResolutionChange_();
+  }
+
+  /**
+   * @param {boolean} enabled Whether automatic Vex switching should be active.
+   * @private
+   */
+  handleGlobalAutoSwitchChange_(enabled) {
+    if (this.rendererHint_ !== 'vex') {
+      return;
+    }
+    const nextEnabled = !!enabled;
+    if (nextEnabled === this.autoVexSwitchEnabled_) {
+      return;
+    }
+    this.autoVexSwitchEnabled_ = nextEnabled;
+    if (nextEnabled) {
+      this.handleAutoSwitchMapChange_(this.getAttachedMap_());
+      this.handleViewResolutionChange_();
+      return;
+    }
+    this.detachAutoSwitchListeners_();
+    if (this.activeRendererHint_ !== 'canvas') {
+      this.switchRenderer_('canvas');
+    }
   }
 
   /**
@@ -304,7 +350,7 @@ class VectorLayer extends BaseVectorLayer {
    */
   getRendererHintForCurrentZoom_() {
     if (!this.autoVexSwitchEnabled_) {
-      return this.rendererHint_;
+      return 'canvas';
     }
     const zoom = this.getCurrentViewZoom_();
     if (typeof zoom !== 'number') {

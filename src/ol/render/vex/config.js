@@ -42,6 +42,9 @@ let manualOverride = null;
 const DEFAULT_VEX_SHARED_LAYER_LIMIT = Infinity;
 let sharedLayerLimitOverride = null;
 
+let vexAutoSwitchEnabled = true;
+const autoSwitchListeners = new Set();
+
 function parseSharedLayerLimit(value) {
   if (value === null || typeof value === 'undefined') {
     return null;
@@ -125,4 +128,41 @@ export function getVexSharedLayerLimit() {
     return runtime;
   }
   return DEFAULT_VEX_SHARED_LAYER_LIMIT;
+}
+
+/**
+ * Enable or disable automatic switching between Vex and canvas renderers.
+ * @param {boolean} enabled Pass `false` to force canvas rendering globally.
+ */
+export function setVexAutoSwitchEnabled(enabled) {
+  const nextEnabled = enabled !== false;
+  if (nextEnabled === vexAutoSwitchEnabled) {
+    return;
+  }
+  vexAutoSwitchEnabled = nextEnabled;
+  autoSwitchListeners.forEach((listener) => listener(vexAutoSwitchEnabled));
+}
+
+/**
+ * @return {boolean} Whether automatic Vex switching is globally enabled.
+ */
+export function isVexAutoSwitchEnabled() {
+  return vexAutoSwitchEnabled;
+}
+
+/**
+ * Register a listener that is notified when auto switch is toggled.
+ * @param {(enabled: boolean) => void} listener Listener callback.
+ * @return {() => void} Cleanup function that removes the listener.
+ */
+export function addVexAutoSwitchChangeListener(listener) {
+  autoSwitchListeners.add(listener);
+  return () => autoSwitchListeners.delete(listener);
+}
+
+if (
+  typeof globalThis !== 'undefined' &&
+  typeof globalThis.setVexAutoSwitchEnabled === 'undefined'
+) {
+  globalThis.setVexAutoSwitchEnabled = setVexAutoSwitchEnabled;
 }
