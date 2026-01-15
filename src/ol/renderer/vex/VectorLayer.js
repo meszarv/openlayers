@@ -958,7 +958,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
     const shouldRecord = this.dirty || sharedGroupDirty;
     if (shouldRecord) {
       this.ensureSceneState_(frameState);
-      console.log('VEX PREPARE FRAME dirty');
+      // console.log('VEX PREPARE FRAME dirty');
       this.dirty = false;
       const features = source.getFeatures();
       const recorded = this.recordFeatures_(features, frameState);
@@ -966,7 +966,7 @@ class VexVectorLayerRenderer extends LayerRenderer {
         this.vexContext_.commit();
       }
     } else {
-      console.debug('VEX PREPARE FRAME not dirty', frameState);
+      // console.debug('VEX PREPARE FRAME not dirty', frameState);
     }
 
     return shouldRecord;

@@ -42,7 +42,7 @@ function getRuntimeOverride() {
 const DEFAULT_USE_REAL_VEX = true;
 let manualOverride = null;
 
-const DEFAULT_VEX_SHARED_LAYER_LIMIT = 10;
+const DEFAULT_VEX_SHARED_LAYER_LIMIT = Infinity;
 let sharedLayerLimitOverride = null;
 
 function parseSharedLayerLimit(value) {
