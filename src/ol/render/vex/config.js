@@ -30,9 +30,6 @@ function getRuntimeOverride() {
   if (typeof globalThis === 'undefined') {
     return null;
   }
-  if ('__OL_USE_REAL_VEX_RENDERER__' in globalThis) {
-    return !!globalThis.__OL_USE_REAL_VEX_RENDERER__;
-  }
   if ('OL_USE_REAL_VEX' in globalThis) {
     return !!globalThis.OL_USE_REAL_VEX;
   }
@@ -56,27 +53,9 @@ function parseSharedLayerLimit(value) {
   return Math.trunc(parsed);
 }
 
-function getEnvSharedLayerLimit() {
-  if (
-    typeof process === 'undefined' ||
-    !process ||
-    typeof process.env === 'undefined'
-  ) {
-    return null;
-  }
-  const value = process.env.OL_VEX_SHARED_LAYER_LIMIT;
-  if (typeof value === 'undefined') {
-    return null;
-  }
-  return parseSharedLayerLimit(value);
-}
-
 function getRuntimeSharedLayerLimit() {
   if (typeof globalThis === 'undefined') {
     return null;
-  }
-  if ('__OL_VEX_SHARED_LAYER_LIMIT__' in globalThis) {
-    return parseSharedLayerLimit(globalThis.__OL_VEX_SHARED_LAYER_LIMIT__);
   }
   if ('OL_VEX_SHARED_LAYER_LIMIT' in globalThis) {
     return parseSharedLayerLimit(globalThis.OL_VEX_SHARED_LAYER_LIMIT);
@@ -144,10 +123,6 @@ export function getVexSharedLayerLimit() {
   const runtime = getRuntimeSharedLayerLimit();
   if (runtime !== null) {
     return runtime;
-  }
-  const env = getEnvSharedLayerLimit();
-  if (env !== null) {
-    return env;
   }
   return DEFAULT_VEX_SHARED_LAYER_LIMIT;
 }
